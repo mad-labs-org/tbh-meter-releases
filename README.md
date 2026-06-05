@@ -32,10 +32,8 @@ Every completed run is also saved with full details — result (success / fail /
 ## 📥 Installation
 
 1. Go to the [**latest release**](https://github.com/mad-labs-org/tbh-meter-releases/releases/latest).
-2. Download one of:
-   - **`tbh-meter-Setup-<version>.exe`** — installer (**recommended**, supports auto-update)
-   - **`tbh-meter-Portable-<version>.exe`** — portable, runs without installing (no auto-update)
-3. Run the downloaded file. **No admin rights required** — it installs per-user.
+2. Download **`tbh-meter-Setup-<version>.exe`**.
+3. Run the installer. **No admin rights required** — it installs per-user.
 4. Launch Task Bar Hero, then launch TBH Meter (or the other way around — order doesn't matter).
 5. On first launch the reader takes **1–2 minutes** to lock onto the game. Once it does, live stats appear automatically.
 
@@ -79,11 +77,11 @@ If the game closes, the reader simply waits and reattaches automatically when yo
 | **Follow game window** | Auto-pin the overlay below the game |
 | **Window opacity** | 50–100% overlay transparency |
 | **Leaderboard** | Sign in with Discord to auto-upload successful runs to the TBH Helper leaderboard |
-| **Check for updates** | Manually check for a new version (installer builds only) |
+| **Check for updates** | Manually check for a new version |
 
 ## 🔄 Updates
 
-If you used the **Setup installer**, the app checks for updates on launch and every 6 hours, downloads them in the background, and offers a *Restart to update* prompt. The **Portable** build does not self-update — just download the newest portable exe from the releases page.
+The app checks for updates on launch and every 6 hours, downloads them in the background, and offers a *Restart to update* prompt — no manual reinstall needed.
 
 ## ❓ FAQ
 
