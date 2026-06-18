@@ -9,7 +9,7 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2B-0078d4)](https://github.com/mad-labs-org/tbh-meter-releases/releases/latest)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy_Me_a_Coffee-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/viniarruda)
 
-<img src=".github/assets/meter.png" width="560" alt="Live overlay — stage, DPS, total damage, mobs, gold/s, EXP/s, loot, party and chest tracking">
+<img src=".github/assets/meter-hero.png" width="820" alt="TBH Meter — the Runs history window with the live overlay docked at the bottom-left">
 
 
 _Unaffiliated, open-source fan project — not made by or endorsed by the game's developer._
@@ -31,13 +31,7 @@ TBH Meter is a lightweight, always-on-top overlay that tracks your **Task Bar He
 | **MOBS** | Monsters killed / total |
 | **TIME** | Elapsed run time |
 
-Every finished run is also saved with full detail — result (success / fail / abandoned), gold & XP gained, gold/XP per second, and a complete snapshot of your heroes (class, level, items, mods, skills, stats) — browsable from the built-in **Runs** window:
-
-<div align="center">
-
-<img src=".github/assets/runs.png" width="760" alt="Runs window — per-run DPS, EXP, EXP/s, gold, gold/s, drops and clear time">
-
-</div>
+Every finished run is also saved with full detail — result (success / fail / abandoned), gold & XP gained, gold/XP per second, and a complete snapshot of your heroes (class, level, items, mods, skills, stats) — browsable from the built-in **Runs** window.
 
 ## Install
 
