@@ -1,0 +1,58 @@
+# Installs badge — keeps the README "installs" count honest.
+#
+# The github/downloads/total badge counts EVERY release asset, so electron-updater pings
+# (latest.yml every ~6h per user + the differential blockmaps) dwarf real installs — the raw
+# "total" sat ~24x above actual installs. This job sums ONLY the NSIS installer
+# (tbh-meter-Setup-*.exe) across all releases and publishes a Shields endpoint JSON the README
+# reads. The JSON lives on a dedicated `badges` branch (main blocks direct pushes via ruleset),
+# force-pushed to a single commit each run — zero noise on main's history.
+name: Installs badge
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily; the humanized value moves rarely
+  release:
+    types: [published] # refresh right after a ship
+  workflow_dispatch: {} # manual / first-time bootstrap
+
+permissions:
+  contents: write
+
+concurrency:
+  group: installs-badge
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compute installs and publish badge JSON
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Sum download_count of the installer asset across every release (paginated).
+          total=$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases" \
+            | jq '[.[][].assets[] | select(.name | test("Setup.*\\.exe$")) | .download_count] | add // 0')
+
+          # Humanize like Shields: 13146 -> "13k", 1160 -> "1.2k", <1000 -> as-is.
+          msg=$(awk -v n="$total" 'BEGIN{
+            if (n>=1000){ v=n/1000; if (v>=10) printf "%dk",(v+0.5); else printf "%.1fk",v }
+            else printf "%d",n
+          }')
+          echo "Installer downloads (installs): $total -> $msg"
+
+          work="$(mktemp -d)"
+          printf '{\n  "schemaVersion": 1,\n  "label": "installs",\n  "message": "%s",\n  "color": "blue"\n}\n' \
+            "$msg" > "$work/installs.json"
+
+          # Publish to a dedicated single-commit `badges` branch (main is ruleset-protected).
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cd "$work"
+          git init -q
+          git checkout -q -b badges
+          git add installs.json
+          git commit -qm "chore(badge): installs ${msg}"
+          git push -fq "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges
