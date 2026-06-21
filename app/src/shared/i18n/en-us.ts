@@ -66,6 +66,7 @@ export const DICT = {
   // ── Window headers ──
   "header.tabRuns": "Runs",
   "header.tabTracker": "Tracker",
+  "header.tabPlanner": "Planner",
   "header.tabSettings": "Settings",
   "header.signIn": "Sign in",
   "header.signedIn": "Signed in",
@@ -312,6 +313,55 @@ export const DICT = {
   // ── Chests / drops ──
   "chest.fallback": "Chest",
   "chest.tooltip": "{name} ×{count}",
+
+  // ── EXP "Optimal Climb" planner ──
+  "planner.title": "Optimal climb",
+  "planner.subjectTeam": "Team",
+  "planner.targetLabel": "Target level",
+  "planner.contextLine": "Based on your recent DPS (~{dps}) and {runs} counted runs across {stages} stages.",
+  "planner.maxPill": "MAX",
+  "planner.atCurrentDps": "at your current DPS",
+  "planner.totalRough": "total ≈ {time} (rough)",
+  "planner.planFor": "Plan: {subject} → Lv {target}",
+  "planner.colLevels": "Levels",
+  "planner.colStage": "Best stage",
+  "planner.colTime": "Time",
+  "planner.colNotes": "Notes",
+  "planner.keepPct": "keep {pct}%",
+  "planner.gatedBy": "Gated by {hero} (last to finish).",
+  "planner.perHeroBreakdown": "Per-hero breakdown",
+  "planner.heroFinish": "{hero}: {time}",
+  "planner.bandGating": "Stage chosen for {hero}",
+  // Confidence badges (clear-time tier)
+  "planner.confMeasured": "Measured",
+  "planner.confMeasuredThin": "Measured (few samples)",
+  "planner.confEstimatedCalibrated": "Estimated (calibrated)",
+  "planner.confEstimated": "Estimated",
+  "planner.confMeasuredTip": "Clear time from your own clears of this stage.",
+  "planner.confMeasuredThinTip": "Clear time from only one or two of your clears — treat as rough.",
+  "planner.confEstimatedTip":
+    "Estimated from datamine HP ÷ your current DPS — you haven't farmed this stage, so the time is approximate.",
+  // Keep-confidence badges
+  "planner.keepSolid": "Keep: solid",
+  "planner.keepThin": "Keep: thin",
+  "planner.keepApprox": "Keep: approximate",
+  "planner.keepThinTip": "This stage is far below your level — the XP-keep estimate thins out here.",
+  "planner.keepApproxTip":
+    "This stage is above your level — the XP-keep here is unvalidated; treat as a rough guide.",
+  // Global banners (the honesty layer)
+  "planner.bannerDps": "Times assume your current DPS — you'll likely beat them as you gear up.",
+  "planner.bannerBonus": "EXP bonuses not captured — times are conservative.",
+  "planner.bannerAccount": "Total time is rough — it assumes no account XP bonus.",
+  "planner.bannerEstimated": "Some stages you haven't farmed yet — those times are estimates that sharpen as you play.",
+  "planner.bannerUnderLevel": "Part of this plan needs a stage above your level (unvalidated).",
+  "planner.noFarmStage": "No valid farm stage at Lv {level} — clear a higher stage first.",
+  // States
+  "planner.emptyTitle": "Play a few runs first",
+  "planner.emptyBody":
+    "The planner learns from your own clears — your DPS and clear times per stage. Once you've finished a run or two, it'll map the fastest path to your target level.",
+  "planner.maxedTitle": "Your team is maxed",
+  "planner.maxedBody": "Nothing left to climb.",
+  "planner.alreadyThere": "Already at the target level.",
 
   // ── Difficulty modes (game enum, display only) ──
   "mode.Normal": "Normal",
