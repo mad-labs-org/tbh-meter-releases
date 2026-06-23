@@ -133,6 +133,10 @@ function createLiveWindow(): BrowserWindow {
   const settings = getSettings();
   const b = settings.liveBounds;
 
+  // Seed the stable width tracker from the SAME restored bounds the window opens at,
+  // so the first pinLiveHeight doesn't overwrite the user's custom width with the default.
+  lastKnownWidth = b?.width && b.width >= MIN_LIVE_WIDTH ? b.width : DEFAULT_LIVE_WIDTH;
+
   const win = new BrowserWindow({
     x: b?.x,
     y: b?.y,
