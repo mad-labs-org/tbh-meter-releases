@@ -38,7 +38,11 @@ import {
   getUpdateStatus,
   __devSetUpdateStatus,
 } from "./auto-update.js";
-import { shouldDismissStalledSplash, SEARCHING_DISMISS_MS } from "../shared/splash-decide.js";
+import {
+  shouldDismissStalledSplash,
+  shouldForceDismissSplash,
+  SEARCHING_DISMISS_MS,
+} from "../shared/splash-decide.js";
 import { startAutoUpload, stopAutoUpload, notifySignedIn } from "./auto-upload.js";
 import { onSignedIn } from "./auth.js";
 import { installGlobalErrorReporting } from "./error-report.js";
@@ -489,8 +493,17 @@ app.whenReady().then(() => runIfPrimary(isPrimaryInstance, async () => {
     // keeps a real first-time resolve/scan and an in-flight update on screen.
     splashArmedAt = Date.now();
     splashSearchingWatch = setInterval(() => {
-      if (Date.now() - splashArmedAt < SEARCHING_DISMISS_MS) return;
-      if (shouldDismissStalledSplash(getUpdateStatus(), getReaderStatus())) dismissSplash();
+      const elapsed = Date.now() - splashArmedAt;
+      // Stuck on "searching" (game not running, or the reader abandoned an incomplete scan) → free
+      // the user after the searching deadline.
+      if (elapsed >= SEARCHING_DISMISS_MS && shouldDismissStalledSplash(getUpdateStatus(), getReaderStatus())) {
+        dismissSplash();
+        return;
+      }
+      // Last-resort ceiling: a reader stuck mid-bring-up ("resolving"/"scanning" that never
+      // completes) hits none of the other dismissals — past the hard cap, dismiss regardless of
+      // phase so the splash can never hang forever (an in-flight update still defers).
+      if (shouldForceDismissSplash(getUpdateStatus(), elapsed)) dismissSplash();
     }, 2000);
     // Dev preview without a real reader/updater (e.g. macOS): walk the WHOLE boot
     // animation — the update flow first, then the reader bring-up — so every splash
