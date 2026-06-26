@@ -78,9 +78,11 @@ interface IngestRunHero {
   skillLevels?: Record<string, number>;
   gear?: Record<string, IngestGearSlot>;
   runeKeys?: number[];
-  /** The reader's live FINAL stats, keyed by StatType id (e.g. "1" AttackDamage). These are
-   *  read 100% faithfully from game memory; the site displays them directly instead of
-   *  recomputing from the build (the recompute can't reproduce account-wide stats). */
+  /** The reader's live FINAL stats, keyed by StatType id (e.g. "1" AttackDamage). Read 100%
+   *  faithfully from game memory — the hero's OWN, UNBUFFED values (reader 0x18 FINAL_STATS;
+   *  party buffs like the Priest's Blessing of Might live only in the 0x20 dict). The site
+   *  displays them directly and re-applies party buffs itself when deriving Basic Attack DPS,
+   *  instead of recomputing from the build (the recompute can't reproduce account-wide stats). */
   stats?: Record<string, number>;
 }
 interface IngestRunBody {
