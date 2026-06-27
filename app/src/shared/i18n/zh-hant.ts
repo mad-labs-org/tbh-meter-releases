@@ -119,6 +119,7 @@ export const DICT: Partial<Record<DictKey, string>> = {
   "diagnostics.failed": "診斷資訊收集失敗。",
   "diagnostics.copyToClipboard": "複製到剪貼簿",
   "diagnostics.copied": "已複製！",
+  "diagnostics.copyFailed": "複製失敗 — 請檢查剪貼板權限。",
   "diagnostics.backToSettings": "返回設定",
   "settings.runHistory": "挑戰歷史",
   "settings.runHistoryDesc":

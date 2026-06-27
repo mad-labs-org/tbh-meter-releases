@@ -121,6 +121,7 @@ export const DICT: Partial<Record<DictKey, string>> = {
   "diagnostics.failed": "診断情報の収集に失敗しました。",
   "diagnostics.copyToClipboard": "クリップボードにコピー",
   "diagnostics.copied": "コピーしました！",
+  "diagnostics.copyFailed": "コピーに失敗しました — クリップボードの権限を確認してください。",
   "diagnostics.backToSettings": "設定に戻る",
   "settings.runHistory": "ラン履歴",
   "settings.runHistoryDesc":

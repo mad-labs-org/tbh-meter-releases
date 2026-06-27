@@ -128,6 +128,7 @@ export const DICT = {
   "diagnostics.failed": "Failed to collect diagnostics.",
   "diagnostics.copyToClipboard": "Copy to clipboard",
   "diagnostics.copied": "Copied!",
+  "diagnostics.copyFailed": "Copy failed — check clipboard permissions.",
   "diagnostics.backToSettings": "Back to Settings",
   "settings.runHistory": "Run history",
   "settings.runHistoryDesc":

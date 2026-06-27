@@ -122,6 +122,7 @@ export const DICT: Partial<Record<DictKey, string>> = {
   "diagnostics.failed": "Tanı bilgileri toplanamadı.",
   "diagnostics.copyToClipboard": "Panoya kopyala",
   "diagnostics.copied": "Kopyalandı!",
+  "diagnostics.copyFailed": "Kopyalama başarısız — pano izinlerini kontrol edin.",
   "diagnostics.backToSettings": "Ayarlara dön",
   "settings.runHistory": "Run geçmişi",
   "settings.runHistoryDesc":

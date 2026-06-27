@@ -121,6 +121,7 @@ export const DICT: Partial<Record<DictKey, string>> = {
   "diagnostics.failed": "진단 정보 수집 실패.",
   "diagnostics.copyToClipboard": "클립보드에 복사",
   "diagnostics.copied": "복사됨!",
+  "diagnostics.copyFailed": "복사 실패 — 클립보드 권한을 확인하세요.",
   "diagnostics.backToSettings": "설정으로 돌아가기",
   "settings.runHistory": "런 기록",
   "settings.runHistoryDesc":

@@ -122,6 +122,7 @@ export const DICT: Partial<Record<DictKey, string>> = {
   "diagnostics.failed": "Không thể thu thập chẩn đoán.",
   "diagnostics.copyToClipboard": "Sao chép vào clipboard",
   "diagnostics.copied": "Đã sao chép!",
+  "diagnostics.copyFailed": "Sao chép thất bại — kiểm tra quyền clipboard.",
   "diagnostics.backToSettings": "Quay lại Cài đặt",
   "settings.runHistory": "Lịch sử lượt chơi",
   "settings.runHistoryDesc":

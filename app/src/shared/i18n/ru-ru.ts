@@ -121,6 +121,7 @@ export const DICT: Partial<Record<DictKey, string>> = {
   "diagnostics.failed": "Не удалось собрать диагностику.",
   "diagnostics.copyToClipboard": "Копировать в буфер обмена",
   "diagnostics.copied": "Скопировано!",
+  "diagnostics.copyFailed": "Не удалось скопировать — проверьте разрешения буфера обмена.",
   "diagnostics.backToSettings": "Вернуться к настройкам",
   "settings.runHistory": "История забегов",
   "settings.runHistoryDesc":
