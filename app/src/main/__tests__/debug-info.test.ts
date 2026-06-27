@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_SETTINGS } from "../../shared/ipc-types.js";
 
 // ── Mock electron ─────────────────────────────────────────────────────────
 const mockScreen = {
@@ -45,22 +46,14 @@ afterAll(() => {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-/** Minimal valid AppSettings (only the whitelisted keys matter). */
+/** Full AppSettings (uses DEFAULT_SETTINGS, overridden with test values). */
 function defaultSettings() {
   return {
+    ...DEFAULT_SETTINGS,
     outputDir: dir,
-    opacity: 1,
-    alwaysOnTop: true,
     liveBounds: { x: 100, y: 200, width: 320, height: 96 },
     listBounds: { x: 400, y: 300, width: 800, height: 600 },
-    hideSignInPrompt: false,
-    liveExpanded: true,
-    runColumns: [],
-    analyticsEnabled: true,
-    hideNonCounted: true,
-    minDurationSec: null,
-    maxRuns: null,
-  } as const;
+  };
 }
 
 /** Minimal opts that satisfy DebugInfoOpts. */
@@ -332,10 +325,11 @@ describe("collectDebugInfo", () => {
     touch("meter.log", logLines.join("\n"));
     const out = await collectDebugInfo(defaultOpts());
     expect(out).toContain("--- meter.log (last 50 lines) ---");
-    // Only last 50 lines
-    expect(out).toContain("line 11");
-    expect(out).not.toContain("line 1");
-    expect(out).not.toContain("line 10");
+    // Only last 50 lines — "line 10" (10th) is excluded, "line 11" (11th) is first included
+    expect(out).toMatch(/^line 11$/m);
+    expect(out).not.toMatch(/^line 10$/m);
+    // "line 1" must not appear as a standalone line (substring of "line 11" is fine)
+    expect(out).not.toMatch(/^line 1$/m);
   });
 
   it("shows not found for missing log files", async () => {
