@@ -86,6 +86,44 @@ def read_attribute_levels(reader, psd):
     return res
 
 
+def _iter_party_slots(reader, sm, hero_cat=None):
+    """Yields (slot, heroKey, uf) for each VALID deployed hero in StageManager.HeroList — the
+    SHARED walk behind read_live_party AND read_party_slots, so membership, the ghost discriminator
+    and the slot index are defined in ONE place; pick<->read<->slot agree by construction (the
+    1.00.13 invariant — see [[invariants/party-live-resolution]]).
+
+    `slot` is the hero's index in the fixed 3-slot formation array: empty slots are null and skipped,
+    so the index IS the in-game formation position (0/1/2, gaps included; verified live — HeroList
+    len=3, a solo hero sits at its own slot with the others null). GHOST discriminator: a real deployed
+    hero resolves a class in `hero_cat`; a ghost carries a stale/garbage key that doesn't
+    (hero_cat=None -> heroKey-plausibility only). NEVER raises -> yields nothing on any failure."""
+    try:
+        if not sm:
+            return
+        hl = reader.rptr(sm + StageManager.HERO_LIST)
+        if not hl:
+            return
+        n = reader.ri32(hl + Array.MAX_LENGTH)
+        if n is None or not (0 < n <= 12):
+            return
+        for i in range(n):
+            h = reader.rptr(hl + Array.DATA + i * 8)
+            if not h:
+                continue
+            uf = reader.rptr(h + Unit.CACHE)
+            if not uf:
+                continue
+            hi = reader.rptr(uf + HeroRuntime.INFO)
+            hk = reader.ri32(hi + HeroInfoData.HERO_KEY) if hi else None
+            if hk is None or not (0 < hk < 10_000_000):
+                continue
+            if hero_cat is not None and hk not in hero_cat:
+                continue
+            yield i, hk, uf
+    except Exception:
+        return
+
+
 def read_live_party(reader, sm, hero_cat=None, save_heroes=None):
     """{heroKey: (level, exp)} for the LIVE DEPLOYED party (StageManager.HeroList). The party
     IDENTITY (which heroKeys are on the field) AND the per-hero level/exp are all read LIVE.
@@ -115,35 +153,13 @@ def read_live_party(reader, sm, hero_cat=None, save_heroes=None):
     — so pick and read never disagree on which slot is a carrier."""
     res = {}
     try:
-        if not sm:
-            return res
-        hl = reader.rptr(sm + StageManager.HERO_LIST)
-        if not hl:
-            return res
-        n = reader.ri32(hl + Array.MAX_LENGTH)
-        if n is None or not (0 < n <= 12):
-            return res
-        for i in range(n):
-            h = reader.rptr(hl + Array.DATA + i * 8)
-            if not h:
-                continue
-            uf = reader.rptr(h + Unit.CACHE)
-            if not uf:
-                continue
-            hi = reader.rptr(uf + HeroRuntime.INFO)
-            hk = reader.ri32(hi + HeroInfoData.HERO_KEY) if hi else None
-            if hk is None or not (0 < hk < 10_000_000):
-                continue
-            # GHOST discriminator: a real deployed hero resolves a class in the catalog; a ghost
-            # carries a stale/garbage key that doesn't. heroKey-plausibility only when hero_cat is absent.
-            if hero_cat is not None and hk not in hero_cat:
-                continue
+        for _slot, hk, uf in _iter_party_slots(reader, sm, hero_cat):
             # LEVEL + EXP read LIVE by decoding the ACTk cipher in place (the +0xC decoy died in
             # 1.00.20). game/obscured.py reimplements the decode read from the binary. LEVEL falls back
             # to the save snapshot on an unreadable/implausible cipher (stable, context only). EXP stays
             # None on a bad read — NEVER the stale save exp — so close_run degrades to the per-hero save
             # delta honestly ([[invariants/metric-fallback-chains]] rule 2), instead of reporting save as
-            # live. The party IDENTITY remains the live heroKey gate above.
+            # live. The party IDENTITY (which slots count) is the shared _iter_party_slots gate.
             lvl = obscured.decode_obscured_int(reader.ru32(uf + HeroRuntime.LEVEL_HIDDEN),
                                                reader.ru32(uf + HeroRuntime.LEVEL_KEY))
             if lvl is None or not (0 < lvl <= 200):
@@ -154,6 +170,17 @@ def read_live_party(reader, sm, hero_cat=None, save_heroes=None):
     except Exception:
         return {}
     return res
+
+
+def read_party_slots(reader, sm, hero_cat=None):
+    """{heroKey: slot} for the LIVE DEPLOYED party — `slot` = the hero's FORMATION position (its
+    index in StageManager.HeroList; empty slots are null, so the index IS the in-game position
+    0/1/2, gaps included). Shares membership + the ghost discriminator with read_live_party (the
+    same _iter_party_slots), so the slot map and the party never disagree. The run record carries
+    this per hero so the team's in-game order/position survives to the app and the leaderboard — it
+    was previously LOST (heroes came out in SAVE-ROSTER order and the HeroList slot index was
+    discarded). NEVER raises -> {}."""
+    return {hk: slot for slot, hk, _uf in _iter_party_slots(reader, sm, hero_cat)}
 
 
 def _raw_hero_list(reader, sm):
@@ -221,6 +248,15 @@ def hero_in_run(hero_key, live_keys):
     the leaderboard; shows in the app, flagged). NEVER the raw save roster nor a proxy-guess (e.g.
     xp>0 would include a hero that only earned idle xp, re-introducing the bug). Pure/testable."""
     return bool(live_keys) and hero_key in live_keys
+
+
+def order_party_by_slot(heroes):
+    """Stable-sort the run's heroes by their formation `slot` (0/1/2) so the run record emits the
+    party in IN-GAME FORMATION order — it used to come out in SAVE-ROSTER order (the order
+    PlayerSaveData.HEROES happened to iterate), with the live HeroList slot index discarded. A hero
+    with no resolved slot (rare: included via a degraded read) trails, keeping its relative order.
+    Pure/testable, mirrors hero_in_run."""
+    return sorted(heroes, key=lambda h: (h.get("slot") is None, h.get("slot") or 0))
 
 
 def read_stats_dict(reader, uf):
