@@ -92,8 +92,13 @@ TRAILING_BOX_TIERS = (EMonsterLogType.Boss, EMonsterLogType.ActBoss)
 # bug); only the file WRITE is deferred. ACCEPTED trade-off: a hard kill (e.g. AV SIGKILL)
 # inside the window loses that record. See docs/invariants/run-lifecycle.
 PENDING_CLOSE_GRACE = 3.0
+# Minimum fraction of the official clear time the meter must have captured for a SUCCESS to count:
+# below this it joined too late and the totals are undercounts (partial). MUST stay in sync with the
+# converter's app/src/main/converter/helpers.ts::PARTIAL_CAPTURE_MIN (same number on both sides — the
+# reader only logs/diags `partial`; the converter is the persisted spec). See docs/invariants/run-lifecycle.
+PARTIAL_CAPTURE_MIN = 0.95
 
-GAME_VERSION = "1.00.14"   # FALLBACK: the GameAssembly.dll build the reader was made against; the INSTALLED version comes from the game's Version.txt (_detect_game_version)
+GAME_VERSION = "1.00.21"   # FALLBACK: the GameAssembly.dll build the reader was made against; the INSTALLED version comes from the game's Version.txt (_detect_game_version)
 # raw/<id>.json: the LIVE format the reader emits (1 file per run). Bump ONLY when the SHAPE of the
 # output changes — NOT per game build (re-seed/address doesn't count). The converter (app) dispatches
 # on this value. Mirrors app/src/shared/raw-types.ts::RawRunV2. See [[invariants/schema-versioning]].
@@ -400,7 +405,7 @@ def build_raw_record(*, ts_ms, run_outcome, game_version, duration,
 
 def build_live_record(*, run, stage_key, act, stage_no, difficulty,
                        mobs, total_mobs, damage_now, elapsed, gold_now, xp_now, party, drops,
-                       party_stats=None):
+                       party_stats=None, party_progress=None):
     """Builds the RAW LIVE snapshot (live.json, overwritten ~1x/s) from ALREADY-read values —
     RAW observation, NO cooking. The reader STOPPED deriving dps/label/format here: it emits only the
     live numbers/ids and the APP cooks (computeDps/resolveStage/modeName) with the SAME helpers as the
@@ -418,7 +423,11 @@ def build_live_record(*, run, stage_key, act, stage_no, difficulty,
       `None` when neither live nor save resolved (the overlay simply doesn't show the line).
     - `party_stats` = {heroKey: {statId: value}} of the 64 live FINAL stats per hero (same source as the
       raw, read_live_stats_by_hero). ADDITIVE (no bump, schema-versioning exception): an old reader doesn't
-      emit it → the app detects by presence and the overlay degrades (no tooltip). Empty = no live party."""
+      emit it → the app detects by presence and the overlay degrades (no tooltip). Empty = no live party.
+    - `party_progress` = {heroKey: {level, exp, gain}} — the per-hero LIVE leveling snapshot (level +
+      within-level exp + run-accumulated xp, built by metrics/xp.party_progress) that powers the overlay's
+      time-to-level. ADDITIVE too (same schema-versioning exception as party_stats): an old reader omits it
+      → no ETA shown. Empty = no live party."""
     return {
         "raw_schema_version": RAW_SCHEMA_VERSION,
         "run": run,
@@ -435,6 +444,7 @@ def build_live_record(*, run, stage_key, act, stage_no, difficulty,
         "party": party,
         "drops": drops,
         "party_stats": party_stats or {},
+        "party_progress": party_progress or {},
     }
 
 
@@ -478,6 +488,92 @@ def _pick_list_singleton(reader, cands, list_off, cap):
                      reader.ri32((reader.rptr(a + list_off) or 0) + List.SIZE))), None)
 
 
+# Per-tick scan cap for the LOG_LIST tail (was the inline min(size, last_size+300)): at 10Hz
+# the game never appends this many log entries between ticks; a pathological burst beyond it
+# stops at the cap (a documented, pre-existing exposure — same as the old absolute-index cap).
+LOG_SCAN_CAP = 300
+
+
+class LogScanCursor:
+    """Rotation-aware detector of NEW LogManager.LOG_LIST entries (the run-close boundary).
+
+    The list is CAPPED at 2000 (see metrics/events.py); once full the game evicts from the HEAD
+    to stay at the cap, so ABSOLUTE indices shift DOWN every append. An absolute-index cursor
+    (`[last_size, size)`, fired only on `size` growing) desyncs PERMANENTLY at saturation: `size`
+    stops growing, the scan never runs, and every StageClearLog is missed → runs close only as
+    'abandoned' (clear_time=0) and one open run accrues several stages. So identity here is the
+    entry's OBJECT POINTER (the value in the list slot — each LogData is a managed object whose
+    first qword is its klass), NEVER its index: head-eviction can't desync it.
+
+    Mechanism (stop-at-first-seen backward scan): each tick scan the tail from `size-1` downward,
+    collecting unseen pointers, STOPPING at the first already-seen pointer (or after `cap` reads,
+    or index 0). The list only grows at the tail and evicts at the head, so the seen pointers
+    always form a contiguous block ending at the previous tail — the first seen pointer hit going
+    back is the true boundary; everything older is already processed. Normal append-only ticks
+    read just the 0..few new entries before hitting the boundary; a cap-saturated rotation reads
+    exactly the appended tail. `seed()` establishes the baseline at attach/re-resolve WITHOUT
+    replaying the backlog (the old `last_size = current size`). The seen-set is a bounded FIFO
+    (capacity ~2x the scan cap) so a pointer is remembered well past the visible window before it
+    ages out, guarding the dedup; pointer-address reuse within that window is treated as negligible
+    (same class of accepted imperfection as EventFeed's truncation re-anchor). Pure: it owns only
+    identity state and reads pointers through the caller's `read_ptr_at(i)` (None on a bad slot),
+    so meter_windows.py stays a thin orchestrator and the whole thing is unit-testable with a
+    fake list. See docs/invariants/run-lifecycle + docs/invariants/log-event-detection."""
+
+    def __init__(self):
+        self._seen = {}            # insertion-ordered FIFO of recently-processed entry pointers
+        self._anchored = False
+
+    def _cap_seen(self, cap):
+        # Keep the seen-set >= the visible window so a still-visible entry is never forgotten and
+        # re-yielded; FIFO-trim the oldest beyond that bound (a generous 2x cap).
+        limit = max(1, cap) * 2
+        while len(self._seen) > limit:
+            self._seen.pop(next(iter(self._seen)))
+
+    def _mark(self, ptr):
+        # most-recent insertion order: refresh position so a re-seen tail pointer doesn't age out.
+        if ptr in self._seen:
+            del self._seen[ptr]
+        self._seen[ptr] = True
+
+    def seed(self, read_ptr_at, size, cap):
+        """Baseline at attach/re-resolve: record the current tail as seen WITHOUT yielding it
+        (skip the pre-existing backlog — replacing `last_size = current size`)."""
+        self._anchored = True
+        n = size or 0
+        for i in range(n - 1, max(-1, n - 1 - max(1, cap)), -1):
+            e = read_ptr_at(i)
+            if e:
+                self._mark(e)
+        self._cap_seen(cap)
+
+    def new_entries(self, read_ptr_at, size, cap):
+        """The NEW entry pointers since the last call, oldest->newest, marked seen. Scans the tail
+        backward, stops at the first already-seen pointer (or cap reads / index 0). Falsy slots
+        (None/0 from a bad read) are skipped — never collected, never raising."""
+        if not self._anchored:
+            # defensive: a first call without an explicit seed must NOT replay the backlog.
+            self.seed(read_ptr_at, size, cap)
+            return []
+        if not size or size <= 0:
+            return []
+        out = []
+        lo = max(-1, size - 1 - max(1, cap))     # bound the per-tick scan (cap reads)
+        for i in range(size - 1, lo, -1):
+            e = read_ptr_at(i)
+            if not e:
+                continue                          # bad/empty slot: skip (exception-safety)
+            if e in self._seen:
+                break                             # boundary: everything older is already processed
+            out.append(e)
+        out.reverse()                             # oldest -> newest (chronological processing order)
+        for e in out:
+            self._mark(e)
+        self._cap_seen(cap)
+        return out
+
+
 def _should_skip_run(measured, clear_time, stage):
     """A run under 30s does NOT count (discarded) — EXCEPT stage x-10 (boss-only fight, can
     last seconds), which always counts. `stage` is the stage NUMBER (StageNo), NOT an
@@ -486,12 +582,12 @@ def _should_skip_run(measured, clear_time, stage):
 
 
 def _is_partial(status, clear_time, measured, total_damage):
-    """PARTIAL capture: the meter joined a run already in progress (<80% of the official clear) ->
-    undercount. Gated on clear_time>=30 so x-10 runs (boss, seconds) aren't mis-flagged.
-    EXCEPTION: a success with measured damage <=0 is always a missed capture (covers x-10 with clear<30s
-    that skipped the check and pushed all-zeros to the leaderboard, #163)."""
+    """PARTIAL capture: the meter joined a run already in progress (< PARTIAL_CAPTURE_MIN of the
+    official clear, i.e. <95%) -> undercount. Gated on clear_time>=30 so x-10 runs (boss, seconds)
+    aren't mis-flagged. EXCEPTION: a success with measured damage <=0 is always a missed capture
+    (covers x-10 with clear<30s that skipped the check and pushed all-zeros to the leaderboard, #163)."""
     return bool(status == "success" and (
-        (clear_time >= 30 and measured < clear_time * 0.8) or total_damage <= 0))
+        (clear_time >= 30 and measured < clear_time * PARTIAL_CAPTURE_MIN) or total_damage <= 0))
 
 
 def _box_belongs_to_pending(mt, has_pending):
@@ -830,19 +926,31 @@ def run(hz, output_dir, debug=False):
         print("\n[error] incomplete resolution. Try again with the game in combat.")
         diag(f"[resolve] INCOMPLETE → abort (msm={bool(msm)} lm={bool(lm)} "
              f"sc={bool(sc_class)} sf={bool(sf_class)})")
+        # Revert the splash to a DEADLINE-PROTECTED phase before exiting. The last marker emitted
+        # was `scanning`/`resolving`, which the app's splash has NO dismiss timeout for (only
+        # `searching` does) — and this path PERSISTS NOTHING (resolve_all skips calibrate on an
+        # incomplete scan), so the supervisor re-spawns and cold-scans AGAIN every launch. Without
+        # this the splash hangs forever on "First time on this version — mapping memory" (the
+        # cold-scan-every-launch symptom: a scan run outside combat never completes the managers).
+        # `searching` is the honest state (reader not ready, will retry) AND the one the app can
+        # time out. Re-uses the existing marker vocabulary → no app-side change required.
+        _emit_status("searching")
         return
 
-    csd = save.pick_live_csd(reader, csd_list)
-    sm = save.pick_live_sm(reader, sm_list)
-    print(f"[live party] StageManager {'ok' if sm else 'NOT found (live xp off, uses save)'}"
-          f" — {len(build.read_live_party(reader, sm))} heroes deployed.")
-    # infra-log: the pick decision in detail — candidates, REAL carriers vs ghosts (heroKey ok but
-    # read_live_party empty), which one was picked + a sample of ghosts. THIS was missing in the 1.00.13 debug:
-    # "carriers=0 picked=0x.. party_read=0" + a ghost with lvl=0 would have pointed at the cause on the spot.
-    _smd = build.describe_sm_candidates(reader, sm_list, sm)
+    csd = save.pick_live_csd(reader, csd_list, stage_info)
+    # The live party IDENTITY (heroKeys) gates on hero_cat (the ghost discriminator since 1.00.20 — see
+    # build.read_live_party); level/exp are decoded live there. pick_live_sm gets hero_cat so pick<->read
+    # agree on the carrier.
+    sm = save.pick_live_sm(reader, sm_list, hero_cat)
+    print(f"[live party] StageManager {'ok' if sm else 'NOT found (no live party/xp)'}"
+          f" — {len(build.read_live_party(reader, sm, hero_cat))} heroes deployed.")
+    # infra-log: the pick decision in detail — candidates, REAL carriers vs ghosts (heroKey ok but not a
+    # catalog hero), which one was picked + a sample of ghosts. THIS was missing in the 1.00.13 debug:
+    # "carriers=0 picked=0x.. party_read=0" would have pointed at the cause on the spot.
+    _smd = build.describe_sm_candidates(reader, sm_list, sm, hero_cat)
     diag(f"[party-pick] startup candidates={_smd['total']} hk-accept={_smd['hk_accept']} "
          f"carriers={_smd['carriers']} picked={hex(_smd['picked']) if _smd['picked'] else None} "
-         f"party_read={len(build.read_live_party(reader, sm))}")
+         f"party_read={len(build.read_live_party(reader, sm, hero_cat))}")
     for _ga, _gh in _smd["ghosts"]:
         diag(f"[party-pick]   ghost {hex(_ga)} heroes(hk,lvl,exp)={_gh}")
     # infra-log: the SAVE pick — PSD (the build's gold/heroes source) and CSD (current stage). PSD None was
@@ -898,9 +1006,12 @@ def run(hz, output_dir, debug=False):
         # every run to grab the PARTY-CARRYING instance as soon as a party is deployed. Without
         # this, sm stays None the whole session if startup was out of combat → live party/XP off.
         if not sm:
-            sm = save.pick_live_sm(reader, sm_list)
+            sm = save.pick_live_sm(reader, sm_list, hero_cat)
         p = save.pick_live_psd(reader, psd_list)
-        pl0 = build.read_live_party(reader, sm)
+        # LIVE party identity (heroKeys, gated on hero_cat); level + within-level exp decoded live in
+        # read_live_party (save_heroes = the snapshot passed for the level fallback on a bad decode).
+        _sh = save.read_heroes(reader, p)
+        pl0 = build.read_live_party(reader, sm, hero_cat, _sh)
         # LIVE per-hero xp accumulator (metrics.xp.PartyXpAccumulator) — the primary LIVE of the
         # xp chain. Run state is born HERE (never only at close — that would leak the previous run) and is
         # SEEDED with the t=0 party. Whoever enters LATER (late deploy / a dead hero from the previous run who
@@ -914,7 +1025,7 @@ def run(hz, output_dir, debug=False):
                 # + the save baseline as fallback (if the live one doesn't resolve). All via gold.py.
                 "gold_live_start": combat_gold_live(reader, gold_klass),
                 "gold_save_start": combat_gold_save(reader, p),
-                "heroes_start": {k: v[1] for k, v in save.read_heroes(reader, p).items()},
+                "heroes_start": {k: v[1] for k, v in _sh.items()},
                 "party_live_start": pl0,
                 "xp_acc": xpacc,
                 "build": build.read_build(reader, p, item_cat, hero_cat),
@@ -928,8 +1039,22 @@ def run(hz, output_dir, debug=False):
 
     R = new_run()
     # run_num is NOT reset here — it's resumed from resume_session (above) so as not to recycle an id.
-    _ll0 = reader.rptr(lm + LogManager.LOG_LIST)
-    last_size = (reader.ri32(_ll0 + List.SIZE) or 0) if _ll0 else 0
+
+    def _loglist_size_reader():
+        # (read_ptr_at, size) for the CURRENT LogManager.LOG_LIST tail. read_ptr_at(i) = the entry
+        # OBJECT pointer at absolute index i (the slot's value), None on a bad read — the identity
+        # the rotation-aware LogScanCursor tracks instead of the (head-evicting) absolute index.
+        ll = reader.rptr(lm + LogManager.LOG_LIST)
+        size = reader.ri32(ll + List.SIZE) if ll else None
+        items = reader.rptr(ll + List.ITEMS) if ll else None
+        return (lambda i: reader.rptr(items + Array.DATA + i * 8) if items else None), size
+
+    # Run-close boundary detection: the LOG_LIST is capped at 2000 and evicts from the HEAD once
+    # full, so absolute indices desync; the cursor tracks NEW entries by OBJECT POINTER. SEED here
+    # (and on re-attach) skips the pre-existing backlog (the old `last_size = current size`).
+    log_cursor = LogScanCursor()
+    _seed_read, _seed_size = _loglist_size_reader()
+    log_cursor.seed(_seed_read, _seed_size, LOG_SCAN_CAP)
     last_alive = 0
     prev_dead = None    # previous DeadMonsterUnit size (to detect a stage reload)
     dead_reads = 0      # consecutive failing reads = game closed/restarted (re-attach)
@@ -1006,7 +1131,7 @@ def run(hz, output_dir, debug=False):
             # gold_ok=False -> the envelope marks err and the converter degrades the run, honestly.
             gold_ok = save_delta is not None
             gold_gain, ge_src = (save_delta if gold_ok else 0), "save"
-        # PARTIAL capture: the meter joined a run already in progress (saw < 80% of the official clear) ->
+        # PARTIAL capture: the meter joined a run already in progress (saw < 95% of the official clear) ->
         # damage/gold/xp undercounted. An EXPLICIT flag so the app discards by the flag, instead of inferring
         # "partial" from gold==0 (which silently hid COMPLETE runs whenever the live gold read
         # failed). Only on a clear (clear_time = official duration); gated on >=30s so x-10 runs
@@ -1023,14 +1148,18 @@ def run(hz, output_dir, debug=False):
                       for k, v in heroes_end.items()}
         xp_gain = sum(xp_by_hero.values())
         # LIVE XP = the per-hero ACCUMULATOR (metrics.xp.PartyXpAccumulator), which integrated the
-        # within-level (EXP_FAKE) tick-by-tick the WHOLE run (seeded in new_run, fed by the
-        # 1s snapshot). Here only: 1 FINAL tick (banks the last ≤1s) + reading the finished records.
-        # Replaces the endpoint delta (t=0 baseline → read at close), which gave +0 to a hero
-        # OUTSIDE the baseline (late deploy / a dead hero from the previous run revived: gain=None → +0 in the
-        # app) and required re-reading the dead hero's uf — the accumulator already banked the gain of whoever died
-        # (a dead hero accumulates 0 while dead, the game's real behavior, preserved).
+        # within-level exp tick-by-tick the WHOLE run (seeded in new_run, fed by the 1s snapshot). Here
+        # only: 1 FINAL tick (banks the last ≤1s) + reading the finished records. Replaces the endpoint
+        # delta (t=0 baseline → read at close), which gave +0 to a hero OUTSIDE the baseline (late deploy
+        # / a dead hero from the previous run revived: gain=None → +0 in the app) — the accumulator banks
+        # the gain of whoever died (a dead hero accumulates 0 while dead, real game behavior, preserved).
+        # 1.00.20: the live within-level exp is decoded from the ACTk cipher in read_live_party and feeds
+        # the accumulator → xp_source="live". If a decode fails (exp None → accumulator saw nobody →
+        # xp_live_ok=False), xp falls back to xp_gain (the per-hero SAVE delta) tagged xp_source="save".
         xpacc = R["xp_acc"]
-        pl_end = build.read_live_party(reader, sm)     # never-raises -> {} on failure
+        # LIVE party identity (gated on hero_cat); level/exp decoded live in read_live_party (heroes_end
+        # is the save snapshot, passed for the level fallback on a bad decode). never-raises -> {}.
+        pl_end = build.read_live_party(reader, sm, hero_cat, heroes_end)
         xpacc.update(pl_end)
         R["party_seen"].update(dict.fromkeys(pl_end))  # live at close = seen (live_keys ⊇ acc)
         # XP per-run = the LIVE one (real-time, exact). The save is a lagging snapshot (useless delta: 0 or a
@@ -1081,14 +1210,19 @@ def run(hz, output_dir, debug=False):
                 if hk not in pl_end:
                     hh["died"] = True   # absent from the HeroList at close (dead with no revive)
             else:
-                # In live_keys but the accumulator never saw it — should not happen (the acc eats the
-                # SAME reads that feed pl_start/party_seen). Per-hero SAVE fallback
-                # (xp_by_hero), NEVER None/+0 (the boundary-death bug) nor the roster. A ⚠ in the log
-                # makes the invariant OBSERVABLE (instead of assumed): if it fires, sum(heroes.xp)
-                # exceeds the run total (acc excludes this save-sourced hero) — a regression signal.
+                # No live accumulator record for this hero -> per-hero SAVE fallback (xp_by_hero),
+                # NEVER None/+0 (the boundary-death bug) nor the roster.
+                # Two cases:
+                #  - the live xp source saw NOBODY (xp_live_ok=False: every hero's cipher decode failed,
+                #    or sm was off the whole run) -> the run already degraded to xp_source="save", so this
+                #    is the EXPECTED honest fallback, NOT an anomaly -> no ⚠.
+                #  - The acc saw SOMEONE but missed THIS hero (xp_live_ok=True): a real regression (the acc
+                #    eats the SAME reads that feed pl_start/party_seen) -> ⚠ makes it OBSERVABLE: if it
+                #    fires, sum(heroes.xp) exceeds the run total (acc excludes this save-sourced hero).
                 hh["xp_gained"] = round(xp_by_hero.get(hk, 0.0), 2)
-                print(f"⚠ xp acc-miss hero={hk} (in live_keys with no acc record) "
-                      f"-> save fallback +{hh['xp_gained']}")
+                if xp_live_ok:
+                    print(f"⚠ xp acc-miss hero={hk} (in live_keys with no acc record) "
+                          f"-> save fallback +{hh['xp_gained']}")
             # Per-hero survival (from the HeroDie/Resurrection logs): deaths, revives, who killed.
             deaths_h = R["deaths"].get(hk, 0)
             if deaths_h:
@@ -1227,9 +1361,9 @@ def run(hz, output_dir, debug=False):
                                 (sc_class, sf_class, msm, lm, csd_list, psd_list,
                                  stage_info, item_cat, hero_cat, sm_list, gold_klass, gb_class,
                                  die_class, res_class) = rr
-                                csd = save.pick_live_csd(reader, csd_list)
-                                sm = save.pick_live_sm(reader, sm_list)
-                                _smd = build.describe_sm_candidates(reader, sm_list, sm)
+                                csd = save.pick_live_csd(reader, csd_list, stage_info)
+                                sm = save.pick_live_sm(reader, sm_list, hero_cat)
+                                _smd = build.describe_sm_candidates(reader, sm_list, sm, hero_cat)
                                 diag(f"[party-pick] re-attach candidates={_smd['total']} "
                                      f"hk-accept={_smd['hk_accept']} carriers={_smd['carriers']} "
                                      f"picked={hex(_smd['picked']) if _smd['picked'] else None}")
@@ -1246,8 +1380,11 @@ def run(hz, output_dir, debug=False):
                                 else:
                                     tbase = idx_ut = None
                                 R = new_run()
-                                _ll = reader.rptr(lm + LogManager.LOG_LIST)
-                                last_size = (reader.ri32(_ll + List.SIZE) or 0) if _ll else 0
+                                # Re-seed the boundary cursor to the NEW lm's current tail (the old
+                                # ga_base/instance is dead after re-attach): skip the backlog so the
+                                # interrupted run's history isn't replayed as clears.
+                                _rs_read, _rs_size = _loglist_size_reader()
+                                log_cursor.seed(_rs_read, _rs_size, LOG_SCAN_CAP)
                                 last_alive = 0
                                 prev_dead = None
                                 cur_key = reader.ri32(csd + CommonSaveData.CURRENT_STAGE_KEY) if csd else None
@@ -1272,7 +1409,7 @@ def run(hz, output_dir, debug=False):
             dps_live = dps_t.dps(now)
 
             if now - last_refresh >= REFRESH:
-                c = save.pick_live_csd(reader, csd_list)
+                c = save.pick_live_csd(reader, csd_list, stage_info)
                 if c:
                     csd = c
                 last_refresh = now
@@ -1297,66 +1434,63 @@ def run(hz, output_dir, debug=False):
             if dead_now is not None:
                 prev_dead = dead_now
 
-            # close by LOG: StageClearLog (success) or StageFailedLog (fail)
+            # close by LOG: StageClearLog (success) or StageFailedLog (fail). Detection of which
+            # entries are NEW is rotation-aware (LogScanCursor, by OBJECT POINTER): the LOG_LIST is
+            # capped at 2000 and evicts from the HEAD once full, so the absolute index desyncs and an
+            # absolute-index cursor stops firing at saturation — every clear then missed (runs only
+            # 'abandoned', clear=0; one run accrues several stages). LABELING below is unchanged: each
+            # NEW entry by KLASS-POINTER (never an ELogType field) — see docs/invariants/log-event-detection.
             closed = False
-            loglist = reader.rptr(lm + LogManager.LOG_LIST)
-            size = reader.ri32(loglist + List.SIZE) if loglist else None
-            if size is not None and size != last_size:
-                if size > last_size:
-                    items = reader.rptr(loglist + List.ITEMS)
-                    for i in range(last_size, min(size, last_size + 300)):
-                        e = reader.rptr(items + Array.DATA + i * 8) if items else None
-                        if not e:
-                            continue
-                        kl = reader.rptr(e)
-                        if kl == sc_class:
-                            close_run("success", cur_key, e); closed = True
-                        elif kl == sf_class:
-                            close_run("fail", cur_key, e); closed = True
-                        elif gb_class and kl == gb_class:
-                            # GetBoxLog @0x40 is the TYPE ("TreasureChest_<Type>"), NOT an item key
-                            # (confirmed live). The authoritative tier is monster_type @0x50; the
-                            # exact box variant isn't in the event → map the tier -> the canonical
-                            # box key (BOX_KEY_BY_TIER). The old int(bk_str) swallowed EVERY drop.
-                            # ROUTING: a BOSS chest (mt 1/2) arrives ~0.6s AFTER the clear (even
-                            # in the SAME batch of entries: the close above already swapped R) → belongs
-                            # to the PENDING success, not the new run. Mob (mt=0) → current run. With no
-                            # pending (attached right after a clear) → current run + WARN; a real
-                            # chest is never discarded. See docs/invariants/run-lifecycle.
-                            mt = reader.ri32(e + GetBoxLog.MONSTER_TYPE)
-                            box_key = BOX_KEY_BY_TIER.get(mt)
-                            if box_key is not None:
-                                drop = {"box_key": box_key, "monster_type": mt}
-                                if (_box_belongs_to_pending(mt, pending is not None)
-                                        and _absorb_drop(pending["rec"], drop)):
-                                    pending["absorbed"].append(drop)
-                                    print(f"\n[box] boss box (mt={mt}) absorbed into closed "
-                                          f"run {pending['rec'].get('id')}")
-                                else:
-                                    if mt in TRAILING_BOX_TIERS:
-                                        # Two DISTINCT reasons in the log (the meter.log triage
-                                        # can't lie): no pending (e.g. attached right after
-                                        # a clear) vs absorb refused (pending rec out of
-                                        # shape — unreachable by construction today).
-                                        why = ("absorb refused (malformed pending rec)"
-                                               if pending is not None else "no pending close")
-                                        print(f"\n[box] WARN boss box (mt={mt}) — {why}; "
-                                              "credited to current run")
-                                    R["drops"].append(drop)
-                        elif die_class and kl == die_class:
-                            # HeroDie: @0x48 = the dead hero, @0x40 = the monster that killed (LIVE-CRACKED).
-                            victim = _suffix_int(reader.read_string(reader.rptr(e + HeroDieLog.VICTIM_HERO)))
-                            killer = _suffix_int(reader.read_string(reader.rptr(e + HeroDieLog.KILLER_MONSTER)))
-                            if victim is not None:
-                                R["deaths"][victim] = R["deaths"].get(victim, 0) + 1
-                                if killer is not None:
-                                    R["killers"].setdefault(victim, []).append(killer)
-                        elif res_class and kl == res_class:
-                            # Resurrection: @0x40 = the revived hero. Auto-revive (~115s) or the Priest's skill.
-                            rev = _suffix_int(reader.read_string(reader.rptr(e + ResurrectionLog.HERO)))
-                            if rev is not None:
-                                R["revives"][rev] = R["revives"].get(rev, 0) + 1
-                last_size = size
+            _scan_read, _scan_size = _loglist_size_reader()
+            for e in log_cursor.new_entries(_scan_read, _scan_size, LOG_SCAN_CAP):
+                kl = reader.rptr(e)
+                if kl == sc_class:
+                    close_run("success", cur_key, e); closed = True
+                elif kl == sf_class:
+                    close_run("fail", cur_key, e); closed = True
+                elif gb_class and kl == gb_class:
+                    # GetBoxLog @0x40 is the TYPE ("TreasureChest_<Type>"), NOT an item key
+                    # (confirmed live). The authoritative tier is monster_type @0x50; the
+                    # exact box variant isn't in the event → map the tier -> the canonical
+                    # box key (BOX_KEY_BY_TIER). The old int(bk_str) swallowed EVERY drop.
+                    # ROUTING: a BOSS chest (mt 1/2) arrives ~0.6s AFTER the clear (even
+                    # in the SAME batch of entries: the close above already swapped R) → belongs
+                    # to the PENDING success, not the new run. Mob (mt=0) → current run. With no
+                    # pending (attached right after a clear) → current run + WARN; a real
+                    # chest is never discarded. See docs/invariants/run-lifecycle.
+                    mt = reader.ri32(e + GetBoxLog.MONSTER_TYPE)
+                    box_key = BOX_KEY_BY_TIER.get(mt)
+                    if box_key is not None:
+                        drop = {"box_key": box_key, "monster_type": mt}
+                        if (_box_belongs_to_pending(mt, pending is not None)
+                                and _absorb_drop(pending["rec"], drop)):
+                            pending["absorbed"].append(drop)
+                            print(f"\n[box] boss box (mt={mt}) absorbed into closed "
+                                  f"run {pending['rec'].get('id')}")
+                        else:
+                            if mt in TRAILING_BOX_TIERS:
+                                # Two DISTINCT reasons in the log (the meter.log triage
+                                # can't lie): no pending (e.g. attached right after
+                                # a clear) vs absorb refused (pending rec out of
+                                # shape — unreachable by construction today).
+                                why = ("absorb refused (malformed pending rec)"
+                                       if pending is not None else "no pending close")
+                                print(f"\n[box] WARN boss box (mt={mt}) — {why}; "
+                                      "credited to current run")
+                            R["drops"].append(drop)
+                elif die_class and kl == die_class:
+                    # HeroDie: @0x48 = the dead hero, @0x40 = the monster that killed (LIVE-CRACKED).
+                    victim = _suffix_int(reader.read_string(reader.rptr(e + HeroDieLog.VICTIM_HERO)))
+                    killer = _suffix_int(reader.read_string(reader.rptr(e + HeroDieLog.KILLER_MONSTER)))
+                    if victim is not None:
+                        R["deaths"][victim] = R["deaths"].get(victim, 0) + 1
+                        if killer is not None:
+                            R["killers"].setdefault(victim, []).append(killer)
+                elif res_class and kl == res_class:
+                    # Resurrection: @0x40 = the revived hero. Auto-revive (~115s) or the Priest's skill.
+                    rev = _suffix_int(reader.read_string(reader.rptr(e + ResurrectionLog.HERO)))
+                    if rev is not None:
+                        R["revives"][rev] = R["revives"].get(rev, 0) + 1
 
             # Pending-close expired (GRACE elapsed with no more boss box) → flush and clear. AFTER
             # the LOG_LIST scan on purpose: a boss box surfacing on the SAME tick the
@@ -1397,20 +1531,22 @@ def run(hz, output_dir, debug=False):
                 # (None/empty) -> disappears in the app (degrades cleanly on a reader without this). The live party
                 # is read ONCE here and reused for xp + frame. The build stays only at close.
                 if not sm:  # found lazily when the player enters a stage
-                    sm = save.pick_live_sm(reader, sm_list)
-                pl_end = build.read_live_party(reader, sm)   # never-raises -> {} on failure
+                    sm = save.pick_live_sm(reader, sm_list, hero_cat)
+                # Live save (for the level fallback + the gold/xp save fallback). Picked BEFORE the party.
+                psd = save.pick_live_psd(reader, psd_list)
+                heroes_now = save.read_heroes(reader, psd) if psd else {}
+                # LIVE party identity (heroKeys, gated on hero_cat); level + within-level exp decoded live
+                # in read_live_party (heroes_now is the save snapshot, for the level fallback on a bad decode).
+                pl_end = build.read_live_party(reader, sm, hero_cat, heroes_now)
                 R["party_seen"].update(dict.fromkeys(pl_end))
                 # LIVE xp accumulator (the SAME object that closes the run in close_run): integrates the
-                # per-hero tick — the 1st sighting seeds the baseline; then sums increments > 0
-                # (level-up by the curve). Dead/absent doesn't move (the accumulated total stays banked).
+                # per-hero tick — the 1st sighting seeds the baseline; then sums increments > 0 (level-up by
+                # the curve). Fed the live decoded exp → drives the overlay's live xp/ETA; the SAVE fallback
+                # below only kicks in if the decode fails (total() None).
                 R["xp_acc"].update(pl_end)
                 # 64 live FINAL stats per hero (same read as the close). Additive in live.json:
                 # feeds the per-hero effective-resistance tooltip in the overlay. never-raises -> {}.
                 live_stats = build.read_live_stats_by_hero(reader, sm)
-                # Live preferred; falls back to the SAVE when the live one doesn't resolve (e.g. StageManager NOT
-                # found -> no live party/xp) — the SAME data the run record uses, so the overlay
-                # isn't empty. Best-effort: any read failure just omits the line.
-                psd = save.pick_live_psd(reader, psd_list)
                 # The EXACT same source as the close (gold.py): live cumulative - the start baseline.
                 g_gain = run_gain(R.get("gold_live_start"), combat_gold_live(reader, gold_klass))
                 if g_gain is None:
@@ -1424,9 +1560,9 @@ def run(hz, output_dir, debug=False):
                 x_gain = R["xp_acc"].total()
                 if x_gain is None:
                     try:
-                        heroes_now = save.read_heroes(reader, psd)
                         # Hero at the CAP: the save delta is phantom (HeroExp never resets) -> 0.0,
-                        # the SAME rule as close_run's xp_by_hero (overlay/record parity).
+                        # the SAME rule as close_run's xp_by_hero (overlay/record parity). heroes_now
+                        # was already read above (reused — same snapshot that fed the party's level).
                         x_gain = (sum(0.0 if xp.level_capped(v[0])
                                       else max(0.0, v[1] - R["heroes_start"].get(k, 0.0))
                                       for k, v in heroes_now.items()) if heroes_now else None)
@@ -1447,6 +1583,10 @@ def run(hz, output_dir, debug=False):
                 # record). gold/xp/party/drops as already read; None disappears in the overlay. ATOMIC write
                 # (tmp+rename): the app may read live.json at any moment → never a half-file.
                 _si_live = stage_info.get(cur_key)
+                # Per-hero live leveling snapshot (level+exp+accumulated gain) for the overlay's
+                # time-to-level — assembled from the SAME pl_end + xp accumulator already in hand
+                # (metrics/xp keeps this orchestrator read-free). Additive in live.json (like party_stats).
+                live_progress = xp.party_progress(R["xp_acc"], pl_end)
                 live_rec = build_live_record(
                     run=run_num,
                     stage_key=cur_key,
@@ -1457,7 +1597,8 @@ def run(hz, output_dir, debug=False):
                     damage_now=dps_t.total_damage, elapsed=elapsed,
                     gold_now=g_gain, xp_now=x_gain,
                     party=party_keys, drops=[dc[0], dc[1], dc[2]],
-                    party_stats=live_stats)
+                    party_stats=live_stats,
+                    party_progress=live_progress)
                 _write_atomic(live_path, json.dumps(live_rec))
                 last_snap = now
             time.sleep(interval)

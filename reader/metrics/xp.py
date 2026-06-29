@@ -1,13 +1,21 @@
-"""xp.py — LIVE per-hero XP: tick-by-tick ACCUMULATOR (PartyXpAccumulator) + level-up
-bridging via the curve.
+"""xp.py — per-hero XP: tick-by-tick ACCUMULATOR (PartyXpAccumulator) + level-up
+bridging via the curve. The within-level exp feeding it is a {heroKey: (level, exp)} snapshot
+(build.read_live_party shape); the accumulator itself is source-agnostic.
 
-Live xp (HeroRuntime.EXP_FAKE) is within-level and resets on level-up; the curve
-(config/level_curve.json = ExpForLevelUp per level) fills the wrap. Validated live:
+The live within-level exp WAS HeroRuntime.EXP_FAKE (ACTk fakeValue decoy) and resets on level-up;
+the curve (config/level_curve.json = ExpForLevelUp per level) fills the wrap. Validated live:
 across 3 level-ups the sum matched with diff 0. Within-level is MONOTONIC outside level-up
 (the dip detector ran many runs with a death and never fired) — death only PAUSES the gain.
 
+1.00.20: the live within-level exp was hidden behind the ACTk ObscuredFloat cipher (the PLAIN
+EXP_FAKE decoy was zeroed build-wide). It is now RECOVERED — build.read_live_party decodes the cipher
+in place (game/obscured.py, algorithm read from the binary), so the accumulator is fed a clean live
+exp again and the run tags xp_source="live" (confirmed: gain matches the screen ~749K/run). The SAVE
+delta remains the honest fallback if the decode ever fails ([[invariants/metric-fallback-chains]] /
+[[invariants/obscured-data-offlimits]]). The accumulator logic below is unchanged.
+
 CAP: a level with no curve entry has no defined progression (level_capped) — the game keeps
-incrementing EXP_FAKE at the cap with no level-up to consume it, so the same-level delta is
+incrementing the within-level exp at the cap with no level-up to consume it, so the same-level delta is
 PHANTOM XP: a hero at the cap gains 0; crossing INTO the cap banks only up to the threshold."""
 
 import json
@@ -161,3 +169,36 @@ class PartyXpAccumulator:
         if not self._heroes:
             return None
         return sum(st["acc"] for st in self._heroes.values())
+
+
+def party_progress(acc, party):
+    """Per-hero LIVE leveling snapshot for the overlay's time-to-level: {heroKey: {level, exp, gain}}.
+
+    Assembles ALREADY-read values (no memory, no clock):
+      - `level`/`exp`: within-level values from read_live_party. `exp` resets on level-up, so the app's
+        "remaining to next level" is curve[level] - exp. Since 1.00.20 these come from decoding the ACTk
+        cipher in read_live_party (the live ETA works again); a hero whose cipher read fails is skipped
+        (exp None) — HONEST: no live rate to project for it — and re-appears once readable.
+      - `gain`: the run's accumulated XP for that hero (PartyXpAccumulator.gain, level-up-bridged), from
+        which the app derives the live rate (delta gain / delta t) and the ETA. 0.0 = seen with no gain
+        yet (just-deployed, or AT the cap where gain is phantom-suppressed) -> the app shows "-"/"MAX".
+
+    Keyed by the CURRENT snapshot (`party` == read_live_party): the heroes deployed RIGHT NOW. A hero in
+    the accumulator but absent from `party` (dead/dropped) gets no entry (no live rate to project).
+    ADDITIVE for live.json (mirrors party_stats): an old reader omits it -> the app degrades (no ETA).
+    Never raises -> {} (the read_live_party / accumulator never-raise contract)."""
+    out = {}
+    try:
+        items = party.items() if party else ()
+        for hk, cur in items:
+            try:
+                lv, exp = cur
+            except (TypeError, ValueError):
+                continue
+            if lv is None or exp is None:
+                continue
+            g = acc.gain(hk) if acc is not None else None
+            out[hk] = {"level": lv, "exp": exp, "gain": g if g is not None else 0.0}
+    except Exception:
+        return {}
+    return out

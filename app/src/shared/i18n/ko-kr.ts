@@ -29,6 +29,8 @@ export const DICT: Partial<Record<DictKey, string>> = {
   "live.noLoot": "전리품 없음",
   "live.team": "팀",
   "live.time": "시간",
+  "live.timeToLevel": "Time to level",
+  "live.maxed": "MAX",
   "live.chestCommon": "일반",
   "live.chestStageBoss": "스테이지 보스",
   "live.chestActBoss": "액트 보스",
@@ -235,6 +237,23 @@ export const DICT: Partial<Record<DictKey, string>> = {
   "quality.skippedTitle":
     "이 런은 유효한 클리어가 아닙니다 (너무 짧거나, 실패/포기로 끝남). 집계되지 않으며 리더보드에도 업로드되지 않았습니다.",
 
+  // ── Run-outcome marker (untranslated placeholders — English source until localized) ──
+  "outcome.buggedLabel": "Bugged",
+  "outcome.buggedTitle":
+    "Some values could not be read for this run, so the numbers may be wrong. It was not uploaded to the leaderboard.",
+  "outcome.failedLabel": "Failed (wipe)",
+  "outcome.failedTitle":
+    "The party was wiped before clearing the stage, so this run does not count and was not uploaded to the leaderboard.",
+  "outcome.abandonedLabel": "Abandoned",
+  "outcome.abandonedTitle":
+    "This run was left before the stage was cleared, so it does not count and was not uploaded to the leaderboard.",
+  "outcome.partialLabel": "Partial",
+  "outcome.partialTitle":
+    "The meter joined this run while it was already in progress, so its totals are under-counted. It was not uploaded to the leaderboard.",
+  "outcome.tooShortLabel": "Too short",
+  "outcome.tooShortTitle":
+    "This clear was below the minimum length to count, so it does not count and was not uploaded to the leaderboard.",
+
   // ── Blue-chest tracker ──
   "cooldowns.title": "파란 상자 트래커",
   "cooldowns.desc": "드롭을 자동 감지해 각 상자 레벨의 쿨다운을 추적합니다 — 클릭 없이.",
@@ -283,10 +302,16 @@ export const DICT: Partial<Record<DictKey, string>> = {
   // ── Sign-in prompt modal ──
   "signin.title": "런을 리더보드에 공유하세요",
   "signin.body":
-    "로그인하지 않았습니다. 런은 익명으로 업로드되어 TBH Helper의 세션 페이지는 작동하지만, 리더보드와 프로필에는 Discord 로그인 후에만 집계됩니다. 로그인하면 이 컴퓨터에서 업로드된 런도 내 계정으로 귀속됩니다.",
+    "로그인하지 않아 런이 이 컴퓨터에만 저장되고 리더보드에 반영되지 않습니다. Discord로 로그인하면 동기화되어 리더보드와 프로필에 반영됩니다.",
   "signin.dontShow": "다시 표시하지 않기",
   "signin.notNow": "나중에",
 
+  "signin.pendingTitle": "런이 동기화되지 않고 있습니다",
+  "signin.pendingBody":
+    "로그아웃 상태여서 완료된 런이 리더보드에 반영되지 않습니다(로컬에 {count}개 대기 중). 로그인하여 동기화하세요.",
+  "signin.expiredTitle": "세션이 만료되었습니다",
+  "signin.expiredBody":
+    "로그아웃되어 런이 리더보드 동기화를 멈췄습니다. 런은 로컬에 저장됩니다. 다시 로그인하면 동기화를 재개합니다.",
   // ── Tray menu ──
   "tray.showLive": "라이브 미터 표시",
   "tray.openRuns": "런 목록 열기",
@@ -317,4 +342,67 @@ export const DICT: Partial<Record<DictKey, string>> = {
   "ago.w": "{n}주 전",
   "ago.mo": "{n}개월 전",
   "ago.y": "{n}년 전",
+
+  // ── EXP "Leveling Planner" (English source — new strings stay English) ──
+  "header.tabPlanner": "Leveling Planner",
+  // Step 1 — pick the subject
+  "planner.stepWho": "Who do you want to level?",
+  "planner.subjectTeam": "Team",
+  "planner.subjectTeamFull": "Whole team",
+  "planner.heroesCaption": "Your {n} most-recently-played heroes, from your run history.",
+  "planner.maxPill": "MAX",
+  // Step 2 — target
+  "planner.stepHowFar": "How far?",
+  "planner.targetLabel": "Target level",
+  // Step 3 — the plan + its sub-tabs
+  "planner.planForHero": "{subject}'s plan",
+  "planner.tabFullClimb": "Full Climb",
+  "planner.tabNextLevel": "Next Level",
+  // Data-basis mode (practical = farmed-only / theoretical = + datamine estimates)
+  "planner.modePractical": "Practical",
+  "planner.modeTheoretical": "Theoretical",
+  "planner.modePracticalDef": "Only stages you've farmed — ranked by your real XP/s. No estimates.",
+  "planner.modeTheoreticalDef": "Every stage, including ones you've never farmed — times are game-data estimates.",
+  "planner.practicalEmpty": "No farmed stages for this hero yet — switch to",
+  // Full Climb tab
+  "planner.climbTo": "To {target}",
+  "planner.climbTotal": "≈ {time} · at {dps} DPS",
+  "planner.colLevels": "Levels",
+  "planner.colStage": "Best stage",
+  "planner.colTime": "Time",
+  "planner.colSource": "Source",
+  "planner.gatedBy": "Gated by {hero} (last to finish).",
+  "planner.perHeroBreakdown": "Per-hero breakdown",
+  // Next Level tab
+  "planner.nextLevelUp": "Next level-up",
+  "planner.nextLevelJump": "Lv {from} → {to}",
+  "planner.nextBestRoute": "best route",
+  "planner.nextWhereToFarm": "Where to farm it — fastest first:",
+  "planner.showAllStages": "Show all {n}",
+  "planner.showFewer": "Show fewer",
+  "planner.gatingHero": "gating hero",
+  // Source badges (the only confidence signal — measured XP vs datamine estimate)
+  "planner.srcMeasured": "your runs",
+  "planner.srcEstimated": "estimated",
+  "planner.srcMeasuredTip": "Time from the real XP you earned on this stage — your runes & accessories are already baked in.",
+  "planner.srcEstimatedTip": "You haven't farmed this stage — projected from game data scaled by your measured EXP rate; sharpens as you play it.",
+  "planner.footMeasuredVsEstimated":
+    "From your runs = the real XP you earned there. Estimated = stages you haven't farmed, projected from game data.",
+  // Under-level keep warning (the lone keep caveat that survives)
+  "planner.keepApprox": "above your level",
+  "planner.keepApproxTip":
+    "This stage is above your level — the XP-keep here is unvalidated; treat as a rough guide.",
+  "planner.noFarmStage": "No valid farm stage at Lv {level} — clear a higher stage first.",
+  // How it works
+  "planner.howTitle": "How it works",
+  "planner.how1": "Reads your runs — your levels, clear times, and the real XP you gained per stage.",
+  "planner.how2": "Finds the fastest route — the best stage for each level as you climb (the sweet spot rises with you).",
+  "planner.how3": "Honest about confidence — ● from your runs where you've farmed; ◔ estimated from game data elsewhere.",
+  // States
+  "planner.emptyTitle": "Play a few runs first",
+  "planner.emptyBody":
+    "The planner learns from your own clears — your levels, clear times, and the real XP you gained per stage. Once you've finished a run or two, it'll map the fastest path to your target level.",
+  "planner.maxedTitle": "Your team is maxed",
+  "planner.maxedBody": "Nothing left to climb.",
+  "planner.alreadyThere": "Already at the target level.",
 };

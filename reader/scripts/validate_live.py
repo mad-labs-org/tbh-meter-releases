@@ -13,16 +13,18 @@ MANDATORY validation step of the /meter-game-update skill — no build ships wit
 VALIDATES (with the game OPEN and IN COMBAT on a stage):
   [calib/seed]  the embedded SEED covers the live build's fp -> fast path, no cold scan
   [gold]        AggregateManager resolves (idx from the seed) + live GoldEarn[SubKey1] > 0
-  [party-live]  StageManager (pick_live_sm) resolves + 1..12 DEPLOYED heroes (not the save roster)
+  [party-live]  StageManager (pick_live_sm) resolves + 1..12 DEPLOYED heroes (not the save roster);
+                identity gated on hero_cat (the ghost discriminator since 1.00.20)
   [hero-class]  each deployed hero resolves a plausible EEquipClassType (classId) via hero_cat
   [save-build]  pick_live_psd + read_gold>0 + read_heroes>=1 (the SAVE path that broke on 1.00.12)
   [build-record] read_build (the heroes[] the run UPLOADS) >=1 hero AND >=1 with items[] OR skills[]
                  (proves ATTRIBUTES/ITEMS/EQUIPPED_* — not just HEROES) + read_account_snapshot
                  (runes/inventory/stash) not-all-None (proves RUNES/INVENTORY/STASH/ITEMS)
-  [xp-live]     the deployed heroes have plausible live level/exp (HeroRuntime fakeValue)
+  [xp-live]     each deployed hero's level+xp DECODE from the ACTk cipher and the decoded LEVEL matches
+                the save (the per-build tripwire: a moved/changed cipher diverges from the save → FAIL)
   [dps]         MonsterSpawnManager + UnitHealthController: >=1 live monster with hp_max>0
   [stats]       StatsHolder.FINAL_STATS (DictFloat): >=1 hero with a dict of ~64 live stats
-  [stage]       the live currentStageKey resolves an entry in the StageInfoData catalog
+  [stage]       the LIVE stage key (Monster.STAGE_KEY) resolves an entry in the StageInfoData catalog
   [run-cycle]   LogManager resolves + LOG_LIST structurally readable (size>=0) — the run boundary
   [catalogs]    stage_info (incl. ACTBOSS x-10) + item_cat + hero_cat non-empty
 
@@ -30,9 +32,19 @@ USAGE (Windows, ADMIN, game open and IN COMBAT):  python reader\\scripts\\valida
 Exit 0 = all PASS (safe to ship). Exit != 0 = some metric FAILed (do NOT ship). Tees to
 validate_live_out.txt next to the file. Does NOT write to the game or the real resolve_cache.
 """
+import math
 import os
 import sys
 import time
+
+# Force UTF-8 on stdout/stderr so a diagnostic glyph (e.g. "↳") never crashes print() on a Windows
+# console/redirect that defaults to cp1252 — without this the gate dies with UnicodeEncodeError before
+# it can print the PASS/FAIL summary. The file tee (validate_live_out.txt) is already UTF-8.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
 
 # bootstrap identical to seed_calib_capture.py: finds reader/ from the share root or from reader/scripts/.
 _here = os.path.dirname(os.path.abspath(__file__))
@@ -50,8 +62,9 @@ import meter_windows as mw                                       # noqa: E402
 from shared.memory import Reader, find_pid, open_process         # noqa: E402
 from il2cpp import typeinfo                                      # noqa: E402
 from metrics import gold                                         # noqa: E402
-from game import save, build, models                             # noqa: E402
-from config.offsets import CommonSaveData, List, LogManager, EEquipClassType  # noqa: E402
+from game import save, build, models, obscured                   # noqa: E402
+from config.offsets import (CommonSaveData, List, LogManager, EEquipClassType, MonsterSpawnManager,  # noqa: E402
+                            Unit, StageManager, Array, HeroRuntime, HeroInfoData)
 
 # Valid classId range = the REAL members of EEquipClassType (single-source: derived from the enum,
 # not a literal). CLASS_TYPE is EEquipClassType, NEVER EHeroType (orphan) — see the obscured invariant.
@@ -116,10 +129,38 @@ def main():
                    f"klass={hex(gold_klass) if gold_klass else None} live={glive}"))
 
     # [party-live] StageManager resolves + 1..12 DEPLOYED heroes (the REAL party, not the save roster).
-    sm = save.pick_live_sm(reader, sm_list)
-    party = build.read_live_party(reader, sm) if sm else {}
+    # The party IDENTITY is read LIVE and gated on hero_cat (the ghost discriminator since 1.00.20 — the
+    # ACTk live level decoy died, so the old lvl>0 gate would reject every real hero). Level/exp are
+    # decoded live inside read_live_party; save_heroes is passed for the level fallback on a bad decode.
+    sm = save.pick_live_sm(reader, sm_list, hero_cat)
+    save_heroes_live = save.read_heroes(reader, save.pick_live_psd(reader, psd_list))
+    party = build.read_live_party(reader, sm, hero_cat, save_heroes_live) if sm else {}
     checks.append(("party-live", bool(sm) and 1 <= len(party) <= 12,
                    f"sm={'ok' if sm else 'NOT found'} deployed={len(party)} keys={sorted(party)}"))
+
+    # --- DIAGNOSTICS: WHY party/dps/stage read empty (the breakdown the one-liner lacks). Reuses
+    #     describe_sm_candidates (the data the real reader writes to reader-diag.log). Pure reads.
+    #     total=0 → no StageManager instances enumerated (resolution/backref). total>0 & hk_accept=0 →
+    #     HeroList/CACHE/INFO/HeroKey chain reads garbage. hk_accept>0 & carriers=0 → the heroKeys don't
+    #     resolve a catalog class (ghost discriminator) — the ghost slots print the raw (hk,lvl,exp).
+    #     (lvl/exp in the raw sample are the DEAD ACTk decoy since 1.00.20; the carrier check uses hero_cat.)
+    try:
+        smd = build.describe_sm_candidates(reader, sm_list, sm, hero_cat)
+        log(f"   ↳ [diag sm]  total={smd['total']} hk_accept={smd['hk_accept']} carriers={smd['carriers']} "
+            f"picked={hex(smd['picked']) if smd['picked'] else None}")
+        for addr, slots in smd["ghosts"]:
+            log(f"        ghost @{hex(addr)} raw(hk,lvl,exp)/slot={slots}")
+    except Exception as e:
+        log(f"   ↳ [diag sm]  error: {e}")
+    try:
+        ml = reader.rptr(msm + MonsterSpawnManager.MONSTER_LIST) if msm else None
+        raw = list(reader.list_ptrs(ml, cap=600)) if ml else []
+        first = raw[0] if raw else None
+        fhc = reader.rptr(first + Unit.HEALTH_CONTROLLER) if first else None
+        log(f"   ↳ [diag msm] msm={hex(msm) if msm else None} listPtr={hex(ml) if ml else None} "
+            f"rawCount={len(raw)} firstUnit={hex(first) if first else None} firstHC={hex(fhc) if fhc else None}")
+    except Exception as e:
+        log(f"   ↳ [diag msm] error: {e}")
 
     # [hero-class] each deployed hero resolves an EEquipClassType (HeroInfoData.CLASS_TYPE via hero_cat),
     # not EHeroType (orphan). Without this, CLASS_TYPE@0x48 could slip and the static diff never checks the
@@ -156,10 +197,33 @@ def main():
                    f"heroes={len(build_recs)} withGearOrSkills={geared} "
                    f"snapshot(runes/inv/stash)={[None if x is None else len(x) for x in snap]}"))
 
-    # [xp-live] the deployed heroes have plausible live level/exp (HeroRuntime fakeValue; read_live_party gates).
-    xp_ok = bool(party) and all(0 < lvl <= 999 and exp >= 0 for lvl, exp in party.values())
-    checks.append(("xp-live", xp_ok,
-                   (f"{len(party)} heroes w/ valid level/exp" if party else "no live party (in combat?)")))
+    # [xp-live] LIVE level + within-level xp recovered by decoding the ACTk cipher in HeroRuntime
+    # (1.00.20+: the PLAIN +0xC decoy was zeroed). THE ORACLE: decode each deployed hero's level
+    # DIRECTLY here (NOT via read_live_party, which masks a bad decode with the save fallback) and
+    # require it to match the SAVE level (±1 for autosave lag), with xp decoding to a finite, ≥0 float.
+    # A moved/changed cipher makes the decoded level DIVERGE from the save → FAIL: the per-build tripwire
+    # that lets us re-find the value on every update (game/obscured.py + obscured-data-offlimits).
+    xp_oracle = []
+    hl = reader.rptr(sm + StageManager.HERO_LIST) if sm else None
+    nslots = reader.ri32(hl + Array.MAX_LENGTH) if hl else None
+    for i in range(nslots if (nslots is not None and 0 < nslots <= 12) else 0):
+        h = reader.rptr(hl + Array.DATA + i * 8)
+        uf = reader.rptr(h + Unit.CACHE) if h else None
+        hi = reader.rptr(uf + HeroRuntime.INFO) if uf else None
+        hk = reader.ri32(hi + HeroInfoData.HERO_KEY) if hi else None
+        if hk is None or hk not in hero_cat:
+            continue
+        dec_lvl = obscured.decode_obscured_int(reader.ru32(uf + HeroRuntime.LEVEL_HIDDEN),
+                                               reader.ru32(uf + HeroRuntime.LEVEL_KEY))
+        dec_xp = obscured.decode_obscured_float(reader.ru32(uf + HeroRuntime.EXP_HIDDEN),
+                                                reader.ru32(uf + HeroRuntime.EXP_KEY))
+        save_lvl = save_heroes_live.get(hk, (None,))[0]
+        ok = (dec_lvl is not None and save_lvl is not None and abs(dec_lvl - save_lvl) <= 1
+              and dec_xp is not None and math.isfinite(dec_xp) and dec_xp >= 0.0)
+        xp_oracle.append((hk, dec_lvl, save_lvl, dec_xp, ok))
+    checks.append(("xp-live", bool(xp_oracle) and all(o[4] for o in xp_oracle),
+                   " ".join(f"hk{hk}:lv{dl}=save{sl}? xp={dx:.4g}" for hk, dl, sl, dx, _ in xp_oracle)
+                   or "no live party (in combat?)"))
 
     # [dps] MonsterSpawnManager + UnitHealthController: DPS = Σ of monster HP drops. models.live_monsters
     # iterates (unit, hp_cur, hp_max) reading MONSTER_LIST/SUMMONED_LIST + Unit.HEALTH_CONTROLLER + HP@0x40/0x4C.
@@ -179,11 +243,18 @@ def main():
     stats_ok = any(n >= 32 for n in stats_sizes.values())
     checks.append(("stats", stats_ok, f"heroesWithStats={len(stats_by_hero)} sizes={sorted(stats_sizes.values())}"))
 
-    # [stage] the live currentStageKey resolves a catalog entry (mode derivable != '?').
-    csd = save.pick_live_csd(reader, csd_list)
-    skey = reader.ri32(csd + CommonSaveData.CURRENT_STAGE_KEY) if csd else None
-    checks.append(("stage", bool(stage_info) and skey is not None and skey in stage_info,
-                   f"curKey={skey} {'in catalog' if skey in (stage_info or {}) else 'OUTSIDE the catalog'}"))
+    # [stage] the LIVE stage key (Monster.STAGE_KEY — the source the overlay AND the run record
+    # actually use) resolves a catalog entry. The save SNAPSHOT (CommonSaveData.currentStageKey via
+    # pick_live_csd) is only a fallback seed: it freezes on a stage switch AND the CommonSaveData type
+    # scan can match false positives (1.00.17: a garbage instance read key=6775040, pt=3.77e19), so it
+    # is surfaced for diagnostics but the LIVE key is what gates — never validate the stale snapshot in
+    # isolation (that is what made this check spuriously red on a correctly-calibrated 1.00.17 seed).
+    live_sk = models.live_stage_key(reader, msm) if msm else None
+    csd = save.pick_live_csd(reader, csd_list, stage_info)
+    snap = reader.ri32(csd + CommonSaveData.CURRENT_STAGE_KEY) if csd else None
+    live_ok = live_sk is not None and live_sk in (stage_info or {})
+    checks.append(("stage", bool(stage_info) and live_ok,
+                   f"live={live_sk} ({'in' if live_ok else 'OUTSIDE'} catalog) snapshot={snap}"))
 
     # [run-cycle] LogManager resolves + LOG_LIST structurally readable. The end of EVERY run is detected by
     # the LOG_LIST growing (LogManager.LOG_LIST@0x20, size@List.SIZE); a badly-resolved LogManager or a

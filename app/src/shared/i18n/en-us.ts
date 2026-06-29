@@ -34,6 +34,8 @@ export const DICT = {
   "live.noLoot": "no loot",
   "live.team": "Team",
   "live.time": "Time",
+  "live.timeToLevel": "Time to level",
+  "live.maxed": "MAX",
   "live.chestCommon": "Common",
   "live.chestStageBoss": "Stage boss",
   "live.chestActBoss": "Act boss",
@@ -64,6 +66,7 @@ export const DICT = {
   // ── Window headers ──
   "header.tabRuns": "Runs",
   "header.tabTracker": "Tracker",
+  "header.tabPlanner": "Leveling Planner",
   "header.tabSettings": "Settings",
   "header.signIn": "Sign in",
   "header.signedIn": "Signed in",
@@ -100,7 +103,7 @@ export const DICT = {
     "Choose which runs show in your list. This is local only — it never changes the leaderboard.",
   "settings.hideIgnored": "Hide ignored runs",
   "settings.hideIgnoredDesc":
-    "Skipped, partial and incomplete-data runs stay hidden. They still count toward your session and can be revealed from the runs list anytime.",
+    "Skipped and unreadable-data runs stay hidden; partial clears (the meter joined mid-run) still show. Hidden runs still count toward your session and can be revealed from the runs list anytime.",
   "settings.hideShorter": "Hide runs shorter than",
   "settings.seconds": "seconds",
   "settings.minDurationDesc":
@@ -154,9 +157,9 @@ export const DICT = {
   "runs.hideIgnoredBtn": "Hide ignored",
   "runs.showIgnoredBtn": "Show ignored ({count})",
   "runs.hideIgnoredTitle":
-    "Hide skipped, partial and degraded runs (they still count toward your session)",
+    "Hide skipped and degraded runs (partial clears still show; everything still counts toward your session)",
   "runs.showIgnoredTitle":
-    "Show runs the meter ignored — too short, partial captures, or with unreadable data",
+    "Show runs the meter ignored — too short or with unreadable data",
   "runs.columns": "Columns",
   "runs.columnsTitle": "Show / hide / reorder columns",
   "runs.newSession": "New session",
@@ -243,6 +246,25 @@ export const DICT = {
   "quality.skippedTitle":
     "This run is not a valid clear (too short, or it ended in a fail or abandon), so it does not count and was not uploaded to the leaderboard.",
 
+  // ── Run-outcome marker (the runs-list icon/tint + detail banner) — distinguishes WHY a run did
+  //    not count by combining status + quality, unlike the quality-only verdict copy above. Purely
+  //    cosmetic; it never changes which runs count, upload, or are hidden. ──
+  "outcome.buggedLabel": "Bugged",
+  "outcome.buggedTitle":
+    "Some values could not be read for this run, so the numbers may be wrong. It was not uploaded to the leaderboard.",
+  "outcome.failedLabel": "Failed (wipe)",
+  "outcome.failedTitle":
+    "The party was wiped before clearing the stage, so this run does not count and was not uploaded to the leaderboard.",
+  "outcome.abandonedLabel": "Abandoned",
+  "outcome.abandonedTitle":
+    "This run was left before the stage was cleared, so it does not count and was not uploaded to the leaderboard.",
+  "outcome.partialLabel": "Partial",
+  "outcome.partialTitle":
+    "The meter joined this run while it was already in progress, so its totals are under-counted. It was not uploaded to the leaderboard.",
+  "outcome.tooShortLabel": "Too short",
+  "outcome.tooShortTitle":
+    "This clear was below the minimum length to count, so it does not count and was not uploaded to the leaderboard.",
+
   // ── Blue-chest tracker ──
   "cooldowns.title": "Blue-chest tracker",
   "cooldowns.desc": "Auto-detects drops and tracks each chest level's cooldown — no clicks.",
@@ -291,10 +313,16 @@ export const DICT = {
   // ── Sign-in prompt modal ──
   "signin.title": "Share your runs on the leaderboard",
   "signin.body":
-    "You are not signed in. Your runs still upload anonymously, so your session page on TBH Helper works — but they only count for the leaderboard and your profile after you sign in with Discord. Signing in also claims the runs already uploaded from this computer.",
+    "You're not signed in, so your runs stay on this computer and never reach the leaderboard. Sign in with Discord to sync them so they count for the leaderboard and your profile.",
   "signin.dontShow": "Don't show this again",
   "signin.notNow": "Not now",
 
+  "signin.pendingTitle": "Your runs aren't syncing",
+  "signin.pendingBody":
+    "You're signed out, so finished runs stopped reaching the leaderboard ({count} waiting locally). Sign in to sync them.",
+  "signin.expiredTitle": "Your session expired",
+  "signin.expiredBody":
+    "You were signed out, so your runs stopped syncing to the leaderboard. They're saved locally. Sign in again to resume.",
   // ── Tray menu ──
   "tray.showLive": "Show live meter",
   "tray.openRuns": "Open runs",
@@ -310,6 +338,68 @@ export const DICT = {
   // ── Chests / drops ──
   "chest.fallback": "Chest",
   "chest.tooltip": "{name} ×{count}",
+
+  // ── EXP "Leveling Planner" (measured-first) ──
+  // Step 1 — pick the subject
+  "planner.stepWho": "Who do you want to level?",
+  "planner.subjectTeam": "Team",
+  "planner.subjectTeamFull": "Whole team",
+  "planner.heroesCaption": "Your {n} most-recently-played heroes, from your run history.",
+  "planner.maxPill": "MAX",
+  // Step 2 — target
+  "planner.stepHowFar": "How far?",
+  "planner.targetLabel": "Target level",
+  // Step 3 — the plan + its sub-tabs
+  "planner.planForHero": "{subject}'s plan",
+  "planner.tabFullClimb": "Full Climb",
+  "planner.tabNextLevel": "Next Level",
+  // Data-basis mode (practical = farmed-only / theoretical = + datamine estimates)
+  "planner.modePractical": "Practical",
+  "planner.modeTheoretical": "Theoretical",
+  "planner.modePracticalDef": "Only stages you've farmed — ranked by your real XP/s. No estimates.",
+  "planner.modeTheoreticalDef": "Every stage, including ones you've never farmed — times are game-data estimates.",
+  "planner.practicalEmpty": "No farmed stages for this hero yet — switch to",
+  // Full Climb tab
+  "planner.climbTo": "To {target}",
+  "planner.climbTotal": "≈ {time} · at {dps} DPS",
+  "planner.colLevels": "Levels",
+  "planner.colStage": "Best stage",
+  "planner.colTime": "Time",
+  "planner.colSource": "Source",
+  "planner.gatedBy": "Gated by {hero} (last to finish).",
+  "planner.perHeroBreakdown": "Per-hero breakdown",
+  // Next Level tab
+  "planner.nextLevelUp": "Next level-up",
+  "planner.nextLevelJump": "Lv {from} → {to}",
+  "planner.nextBestRoute": "best route",
+  "planner.nextWhereToFarm": "Where to farm it — fastest first:",
+  "planner.showAllStages": "Show all {n}",
+  "planner.showFewer": "Show fewer",
+  "planner.gatingHero": "gating hero",
+  // Source badges (the only confidence signal — measured XP vs datamine estimate)
+  "planner.srcMeasured": "your runs",
+  "planner.srcEstimated": "estimated",
+  "planner.srcMeasuredTip": "Time from the real XP you earned on this stage — your runes & accessories are already baked in.",
+  "planner.srcEstimatedTip": "You haven't farmed this stage — projected from game data scaled by your measured EXP rate; sharpens as you play it.",
+  "planner.footMeasuredVsEstimated":
+    "From your runs = the real XP you earned there. Estimated = stages you haven't farmed, projected from game data.",
+  // Under-level keep warning (the lone keep caveat that survives)
+  "planner.keepApprox": "above your level",
+  "planner.keepApproxTip":
+    "This stage is above your level — the XP-keep here is unvalidated; treat as a rough guide.",
+  "planner.noFarmStage": "No valid farm stage at Lv {level} — clear a higher stage first.",
+  // How it works
+  "planner.howTitle": "How it works",
+  "planner.how1": "Reads your runs — your levels, clear times, and the real XP you gained per stage.",
+  "planner.how2": "Finds the fastest route — the best stage for each level as you climb (the sweet spot rises with you).",
+  "planner.how3": "Honest about confidence — ● from your runs where you've farmed; ◔ estimated from game data elsewhere.",
+  // States
+  "planner.emptyTitle": "Play a few runs first",
+  "planner.emptyBody":
+    "The planner learns from your own clears — your levels, clear times, and the real XP you gained per stage. Once you've finished a run or two, it'll map the fastest path to your target level.",
+  "planner.maxedTitle": "Your team is maxed",
+  "planner.maxedBody": "Nothing left to climb.",
+  "planner.alreadyThere": "Already at the target level.",
 
   // ── Difficulty modes (game enum, display only) ──
   "mode.Normal": "Normal",

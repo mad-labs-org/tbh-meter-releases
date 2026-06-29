@@ -1,5 +1,7 @@
 """build.py — reads the hero's BUILD: equips/mods/skills (from the save) + the 64 live
-FINAL stats (id-only) + live level/xp (ACTk fakeValue). Mirrors the monolith.
+FINAL stats (id-only) + the LIVE deployed party identity (heroKeys from StageManager.HeroList;
+level/exp read LIVE by decoding the ACTk cipher in place since 1.00.20 — see read_live_party).
+Mirrors the monolith.
 
 The 64 stats come out keyed by statId int (id-only; the front resolves the name). The
 item/mod/class labels are still filled in (via the offsets enums) so the output matches
@@ -14,6 +16,7 @@ from config.offsets import (HeroRuntime, StatsHolder, Dict, DictFloat, Array, Li
                             CommonSaveData, AttributeSaveData, ItemSaveData, ItemEnchant,
                             name_map, EItemParts, EGradeType, EEquipClassType, ERecipeType,
                             StatType, RuneSaveData, InventorySaveData, StashSaveData)
+from game import obscured
 from shared.utils import resource_path
 
 _PARTS = name_map(EItemParts)
@@ -21,6 +24,12 @@ _GRADE = name_map(EGradeType)
 _CLAZZ = name_map(EEquipClassType)
 _RECIPE = name_map(ERecipeType)
 _STAT = name_map(StatType)
+
+# Sentinel itemKey for an equipped slot whose handle (uniqueId) couldn't be resolved to an item.
+# A real itemKey is a positive int and an EMPTY slot is omitted entirely, so -1 unambiguously means
+# "equipped but unknown" — the front renders it as a clear "unknown" in that slot. The ingest schema
+# (@tbh/shared build-payload: `itemKey: z.number().int().nullable()`) accepts it as-is.
+UNKNOWN_ITEM_KEY = -1
 
 _SKILL_ATTR = None
 _PASSIVE_KEYS = None
@@ -77,9 +86,33 @@ def read_attribute_levels(reader, psd):
     return res
 
 
-def read_live_party(reader, sm):
-    """{heroKey: (level, exp)} LIVE values for the deployed party (fakeValue, without the save's leak).
-    Never raises -> {} on any failure."""
+def read_live_party(reader, sm, hero_cat=None, save_heroes=None):
+    """{heroKey: (level, exp)} for the LIVE DEPLOYED party (StageManager.HeroList). The party
+    IDENTITY (which heroKeys are on the field) AND the per-hero level/exp are all read LIVE.
+    Never raises -> {} on any failure.
+
+    1.00.20 — level/exp are decoded from the ACTk cipher IN PLACE. Through 1.00.19 the live level/exp
+    were the ACTk `fakeValue` PLAIN decoys (@ base+0xC of the ObscuredInt/Float). In 1.00.20 the
+    recompile KILLED those decoys build-wide (they read 0); the real live values stayed in the cipher
+    (hiddenValue @ base+0x4, currentCryptoKey @ base+0x8). Rather than degrade to the lagging save (the
+    per-run save delta jumps ~2× — the bug players reported), we RECOVER the live values by decoding the
+    cipher read-only (game/obscured.py — algorithm read from the binary, not guessed; ObscuredInt level =
+    (hidden-key)^key, ObscuredFloat xp = float(key ^ byteswap(hidden))). The key is read live each tick
+    (handles ACTk rotation). LEVEL falls back to the save on an unreadable cipher; EXP stays None on a bad
+    read so the xp chain degrades honestly ([[invariants/metric-fallback-chains]] rule 2), never the
+    roster. The decode is gated by the validate_live oracle — see [[invariants/obscured-data-offlimits]].
+
+    Ghost discriminator (replaces the dead `lvl>0` filter). The scan/backref returns torn-down/template
+    StageManager 'ghosts' alongside the live carrier ([[invariants/instance-selection]] family). The
+    old discriminator — a real heroKey but `lvl=0` — relied on the now-dead live level. The new, name-
+    free one: the deployed heroKey must resolve a REAL class in `hero_cat` (the 6 hero classes; a ghost
+    carries a stale/garbage key that isn't a catalog hero). Verified in 1.00.20: among ALL StageManager
+    instances ONLY the deployed ones carry a catalog heroKey (no heroKey-bearing ghosts). hero_cat=None
+    -> heroKey-plausibility only (diagnostic callers that just want any live StageManager address).
+
+    pick<->read AGREEMENT (the 1.00.13 invariant): the IDENTITY gate here (heroKey + hero_cat) is the
+    SAME validation pick_live_sm uses (it calls this); save_heroes only FILLS the level/exp, never gates
+    — so pick and read never disagree on which slot is a carrier."""
     res = {}
     try:
         if not sm:
@@ -101,10 +134,22 @@ def read_live_party(reader, sm):
             hk = reader.ri32(hi + HeroInfoData.HERO_KEY) if hi else None
             if hk is None or not (0 < hk < 10_000_000):
                 continue
-            lvl = reader.ri32(uf + HeroRuntime.LEVEL_FAKE)
-            exp = reader.rf32(uf + HeroRuntime.EXP_FAKE)
-            if lvl is None or exp is None or not (0 < lvl <= 999) or exp < 0:
+            # GHOST discriminator: a real deployed hero resolves a class in the catalog; a ghost
+            # carries a stale/garbage key that doesn't. heroKey-plausibility only when hero_cat is absent.
+            if hero_cat is not None and hk not in hero_cat:
                 continue
+            # LEVEL + EXP read LIVE by decoding the ACTk cipher in place (the +0xC decoy died in
+            # 1.00.20). game/obscured.py reimplements the decode read from the binary. LEVEL falls back
+            # to the save snapshot on an unreadable/implausible cipher (stable, context only). EXP stays
+            # None on a bad read — NEVER the stale save exp — so close_run degrades to the per-hero save
+            # delta honestly ([[invariants/metric-fallback-chains]] rule 2), instead of reporting save as
+            # live. The party IDENTITY remains the live heroKey gate above.
+            lvl = obscured.decode_obscured_int(reader.ru32(uf + HeroRuntime.LEVEL_HIDDEN),
+                                               reader.ru32(uf + HeroRuntime.LEVEL_KEY))
+            if lvl is None or not (0 < lvl <= 200):
+                lvl = (save_heroes or {}).get(hk, (None, None))[0]
+            exp = obscured.decode_obscured_float(reader.ru32(uf + HeroRuntime.EXP_HIDDEN),
+                                                 reader.ru32(uf + HeroRuntime.EXP_KEY))
             res[hk] = (lvl, exp)
     except Exception:
         return {}
@@ -151,7 +196,9 @@ def read_arranged_slots(reader, csd):
 
 def _raw_hero_list(reader, sm):
     """RAW HeroList (hk, lvl, exp) per slot, WITHOUT read_live_party's validity filter — just for
-    diagnostics (describe_sm_candidates), to see WHY an instance is a ghost (e.g. lvl=0).
+    diagnostics (describe_sm_candidates), to see WHY an instance is a ghost (e.g. a non-catalog hk).
+    lvl/exp are the DEAD ACTk decoy (LEVEL_FAKE/EXP_FAKE read 0 since 1.00.20) — kept only so the raw
+    sample still shows what those offsets hold; the discriminator is now the heroKey, not lvl.
     Never-raises -> [] on any failure."""
     out = []
     try:
@@ -176,15 +223,16 @@ def _raw_hero_list(reader, sm):
     return out
 
 
-def describe_sm_candidates(reader, sm_list, picked):
+def describe_sm_candidates(reader, sm_list, picked, hero_cat=None):
     """Diagnostics for the StageManager pick (for the reader-diag.log infra log). Returns a dict:
       total      number of candidates (StageManager instances from the scan/backref)
-      hk_accept  how many the WEAK check would accept (>=1 valid heroKey) = the OLD pick's universe
-      carriers   how many are a REAL carrier (non-empty read_live_party) = what the NEW pick accepts
+      hk_accept  how many have >=1 plausible heroKey (0<hk<10M) = the loosest universe
+      carriers   how many are a REAL carrier (non-empty read_live_party) = what the pick accepts
       picked     chosen address (or None)
-      ghosts     up to 5 samples (addr, raw heroes) of hk_accept-but-NOT-carrier (e.g. lvl=0)
-    `hk_accept > carriers` is the signature of the 1.00.13 bug (there were ghosts in the old pick's universe);
+      ghosts     up to 5 samples (addr, raw heroes) of hk_accept-but-NOT-carrier (a non-catalog heroKey)
+    `hk_accept > carriers` flags ghosts in the loose universe (heroKey-bearing but not catalog heroes);
     `carriers == 0` with the run in combat = the carrier wasn't even captured by the scan (rare case, H4).
+    Passes `hero_cat` through so the carrier test uses the SAME (catalog) discriminator the pick uses.
     Pure read, never-raises."""
     hk_accept, carriers, ghosts = 0, 0, []
     try:
@@ -193,7 +241,7 @@ def describe_sm_candidates(reader, sm_list, picked):
             if not any(hk is not None and 0 < hk < 10_000_000 for hk, _, _ in heroes):
                 continue
             hk_accept += 1
-            if read_live_party(reader, a):
+            if read_live_party(reader, a, hero_cat):
                 carriers += 1
             elif len(ghosts) < 5:
                 ghosts.append((a, heroes[:6]))
@@ -321,11 +369,21 @@ def read_build(reader, psd, item_cat, hero_cat):
             continue
         cls = hero_cat.get(hk)
         items = []
-        for uid in reader.arr_u64(reader.rptr(h + HeroSaveData.EQUIPPED_ITEMS)):
+        for pos, uid in enumerate(reader.arr_u64(reader.rptr(h + HeroSaveData.EQUIPPED_ITEMS))):
             if not uid:
-                continue
+                continue                                  # uniqueId 0 = an honestly-empty slot
             it = uid2item.get(uid)
             if not it:
+                # The equipped handle (uniqueId) isn't in itemSaveDatas, so we can't name the item.
+                # DON'T silently drop it (NOT-READ != READ-ZERO): emit it with the UNKNOWN_ITEM_KEY
+                # sentinel so the front renders a clear "unknown" in that slot instead of a
+                # phantom-empty one. equippedItemIds is SLOT-INDEXED (array pos i -> EItemParts i+1,
+                # confirmed live across all 6 classes), so the slot is known even when the item is not.
+                pslot = pos + 1
+                items.append({"slot": _PARTS.get(pslot, "?"),
+                              "slotId": pslot if pslot in _PARTS else None,
+                              "grade": "?", "gradeId": None, "itemKey": UNKNOWN_ITEM_KEY,
+                              "uniqueId": str(uid), "level": None, "mods": []})
                 continue
             ik = reader.ri32(it + ItemSaveData.ITEM_KEY)
             grade, parts, ilvl = item_cat.get(ik, (None, None, None))

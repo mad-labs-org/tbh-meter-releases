@@ -29,6 +29,8 @@ export const DICT: Partial<Record<DictKey, string>> = {
   "live.noLoot": "ยังไม่มีของ",
   "live.team": "ทีม",
   "live.time": "เวลา",
+  "live.timeToLevel": "Time to level",
+  "live.maxed": "MAX",
   "live.chestCommon": "ธรรมดา",
   "live.chestStageBoss": "บอสด่าน",
   "live.chestActBoss": "บอสองก์",
@@ -235,6 +237,23 @@ export const DICT: Partial<Record<DictKey, string>> = {
   "quality.skippedTitle":
     "รันนี้ไม่ใช่การเคลียร์ที่ถูกต้อง (สั้นเกินไป หรือจบด้วยความล้มเหลว/ละทิ้ง) จึงไม่นับและไม่ถูกอัปโหลดขึ้นลีดเดอร์บอร์ด",
 
+  // ── Run-outcome marker (untranslated placeholders — English source until localized) ──
+  "outcome.buggedLabel": "Bugged",
+  "outcome.buggedTitle":
+    "Some values could not be read for this run, so the numbers may be wrong. It was not uploaded to the leaderboard.",
+  "outcome.failedLabel": "Failed (wipe)",
+  "outcome.failedTitle":
+    "The party was wiped before clearing the stage, so this run does not count and was not uploaded to the leaderboard.",
+  "outcome.abandonedLabel": "Abandoned",
+  "outcome.abandonedTitle":
+    "This run was left before the stage was cleared, so it does not count and was not uploaded to the leaderboard.",
+  "outcome.partialLabel": "Partial",
+  "outcome.partialTitle":
+    "The meter joined this run while it was already in progress, so its totals are under-counted. It was not uploaded to the leaderboard.",
+  "outcome.tooShortLabel": "Too short",
+  "outcome.tooShortTitle":
+    "This clear was below the minimum length to count, so it does not count and was not uploaded to the leaderboard.",
+
   // ── Blue-chest tracker ──
   "cooldowns.title": "ตัวติดตามกล่องฟ้า",
   "cooldowns.desc": "ตรวจจับดรอปอัตโนมัติและติดตามคูลดาวน์ของกล่องแต่ละเลเวล — ไม่ต้องคลิก",
@@ -283,10 +302,16 @@ export const DICT: Partial<Record<DictKey, string>> = {
   // ── Sign-in prompt modal ──
   "signin.title": "แชร์รันของคุณขึ้นลีดเดอร์บอร์ด",
   "signin.body":
-    "คุณยังไม่ได้เข้าสู่ระบบ รันของคุณยังอัปโหลดแบบไม่ระบุตัว หน้าเซสชันบน TBH Helper จึงใช้งานได้ — แต่จะนับเข้าลีดเดอร์บอร์ดและโปรไฟล์ของคุณก็ต่อเมื่อเข้าสู่ระบบด้วย Discord การเข้าสู่ระบบยังรับรันที่เคยอัปโหลดจากเครื่องนี้ด้วย",
+    "คุณยังไม่ได้เข้าสู่ระบบ รันของคุณจึงอยู่ในเครื่องนี้และไม่ขึ้นลีดเดอร์บอร์ด เข้าสู่ระบบด้วย Discord เพื่อซิงค์รันให้นับในลีดเดอร์บอร์ดและโปรไฟล์ของคุณ",
   "signin.dontShow": "ไม่ต้องแสดงอีก",
   "signin.notNow": "ยังก่อน",
 
+  "signin.pendingTitle": "รันของคุณไม่ได้ซิงค์",
+  "signin.pendingBody":
+    "คุณออกจากระบบอยู่ รันที่จบแล้วจึงหยุดส่งขึ้นลีดเดอร์บอร์ด ({count} รอซิงค์ในเครื่อง) เข้าสู่ระบบเพื่อซิงค์",
+  "signin.expiredTitle": "เซสชันของคุณหมดอายุ",
+  "signin.expiredBody":
+    "คุณถูกออกจากระบบ รันของคุณจึงหยุดซิงค์กับลีดเดอร์บอร์ด รันยังถูกบันทึกไว้ในเครื่อง เข้าสู่ระบบอีกครั้งเพื่อซิงค์ต่อ",
   // ── Tray menu ──
   "tray.showLive": "แสดง live meter",
   "tray.openRuns": "เปิดรายการรัน",
@@ -317,4 +342,67 @@ export const DICT: Partial<Record<DictKey, string>> = {
   "ago.w": "{n} สัปดาห์ก่อน",
   "ago.mo": "{n} เดือนก่อน",
   "ago.y": "{n} ปีก่อน",
+
+  // ── EXP "Leveling Planner" (English source — new strings stay English) ──
+  "header.tabPlanner": "Leveling Planner",
+  // Step 1 — pick the subject
+  "planner.stepWho": "Who do you want to level?",
+  "planner.subjectTeam": "Team",
+  "planner.subjectTeamFull": "Whole team",
+  "planner.heroesCaption": "Your {n} most-recently-played heroes, from your run history.",
+  "planner.maxPill": "MAX",
+  // Step 2 — target
+  "planner.stepHowFar": "How far?",
+  "planner.targetLabel": "Target level",
+  // Step 3 — the plan + its sub-tabs
+  "planner.planForHero": "{subject}'s plan",
+  "planner.tabFullClimb": "Full Climb",
+  "planner.tabNextLevel": "Next Level",
+  // Data-basis mode (practical = farmed-only / theoretical = + datamine estimates)
+  "planner.modePractical": "Practical",
+  "planner.modeTheoretical": "Theoretical",
+  "planner.modePracticalDef": "Only stages you've farmed — ranked by your real XP/s. No estimates.",
+  "planner.modeTheoreticalDef": "Every stage, including ones you've never farmed — times are game-data estimates.",
+  "planner.practicalEmpty": "No farmed stages for this hero yet — switch to",
+  // Full Climb tab
+  "planner.climbTo": "To {target}",
+  "planner.climbTotal": "≈ {time} · at {dps} DPS",
+  "planner.colLevels": "Levels",
+  "planner.colStage": "Best stage",
+  "planner.colTime": "Time",
+  "planner.colSource": "Source",
+  "planner.gatedBy": "Gated by {hero} (last to finish).",
+  "planner.perHeroBreakdown": "Per-hero breakdown",
+  // Next Level tab
+  "planner.nextLevelUp": "Next level-up",
+  "planner.nextLevelJump": "Lv {from} → {to}",
+  "planner.nextBestRoute": "best route",
+  "planner.nextWhereToFarm": "Where to farm it — fastest first:",
+  "planner.showAllStages": "Show all {n}",
+  "planner.showFewer": "Show fewer",
+  "planner.gatingHero": "gating hero",
+  // Source badges (the only confidence signal — measured XP vs datamine estimate)
+  "planner.srcMeasured": "your runs",
+  "planner.srcEstimated": "estimated",
+  "planner.srcMeasuredTip": "Time from the real XP you earned on this stage — your runes & accessories are already baked in.",
+  "planner.srcEstimatedTip": "You haven't farmed this stage — projected from game data scaled by your measured EXP rate; sharpens as you play it.",
+  "planner.footMeasuredVsEstimated":
+    "From your runs = the real XP you earned there. Estimated = stages you haven't farmed, projected from game data.",
+  // Under-level keep warning (the lone keep caveat that survives)
+  "planner.keepApprox": "above your level",
+  "planner.keepApproxTip":
+    "This stage is above your level — the XP-keep here is unvalidated; treat as a rough guide.",
+  "planner.noFarmStage": "No valid farm stage at Lv {level} — clear a higher stage first.",
+  // How it works
+  "planner.howTitle": "How it works",
+  "planner.how1": "Reads your runs — your levels, clear times, and the real XP you gained per stage.",
+  "planner.how2": "Finds the fastest route — the best stage for each level as you climb (the sweet spot rises with you).",
+  "planner.how3": "Honest about confidence — ● from your runs where you've farmed; ◔ estimated from game data elsewhere.",
+  // States
+  "planner.emptyTitle": "Play a few runs first",
+  "planner.emptyBody":
+    "The planner learns from your own clears — your levels, clear times, and the real XP you gained per stage. Once you've finished a run or two, it'll map the fastest path to your target level.",
+  "planner.maxedTitle": "Your team is maxed",
+  "planner.maxedBody": "Nothing left to climb.",
+  "planner.alreadyThere": "Already at the target level.",
 };
