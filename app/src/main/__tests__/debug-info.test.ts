@@ -361,7 +361,7 @@ describe("collectDebugInfo", () => {
       discordId: "user-discord-id",
     } as Record<string, unknown>;
     const out = await collectDebugInfo(
-      defaultOpts({ settings: s as typeof defaultSettings }),
+      defaultOpts({ settings: s }),
     );
     // None of the non-whitelisted keys should appear
     expect(out).not.toContain("sk-secret-token");
