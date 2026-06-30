@@ -432,7 +432,7 @@ class Reader:
         if _IS_LINUX:
             try:
                 return os.pread(self.handle.fd, size, addr)
-            except OSError:
+            except (OSError, OverflowError, ValueError):
                 return None
         buf = (ctypes.c_char * size)()
         n = ctypes.c_size_t(0)
